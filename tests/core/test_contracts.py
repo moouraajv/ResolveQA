@@ -5,6 +5,7 @@ import unittest
 
 from resolveqa.contracts import (
     Attempts,
+    BlockedReason,
     CaseState,
     ChannelType,
     ContractValidationError,
@@ -198,19 +199,93 @@ class TestRunStateContract(unittest.TestCase):
                 payload["terminal_reason"] = None
                 with self.assertRaises(ContractValidationError) as ctx:
                     RunState.from_dict(payload)
-                self.assertIn("requires terminal_reason", str(ctx.exception))
+                self.assertIn("requires", str(ctx.exception).lower())
 
                 payload["terminal_reason"] = "   "
                 with self.assertRaises(ContractValidationError):
                     RunState.from_dict(payload)
 
-                payload["terminal_reason"] = "limit_exceeded"
-                run_state = RunState.from_dict(payload)
-                self.assertEqual(run_state.state, term_state)
-                self.assertEqual(run_state.terminal_reason, "limit_exceeded")
+    def test_structured_terminal_reason_by_state(self) -> None:
+        """Requirement 2: terminal_reason structured invariants by state."""
+        # 1. verified state MUST NOT have terminal_reason
+        p_ver = dict(self.valid_payload)
+        p_ver["state"] = CaseState.VERIFIED.value
+        p_ver["terminal_reason"] = None
+        rs_ver = RunState.from_dict(p_ver)
+        self.assertIsNone(rs_ver.terminal_reason)
+
+        p_ver_bad = dict(p_ver)
+        p_ver_bad["terminal_reason"] = "verified with success"
+        with self.assertRaises(ContractValidationError):
+            RunState.from_dict(p_ver_bad)
+
+        # 2. non-terminal state MUST NOT have terminal_reason
+        p_created = dict(self.valid_payload)
+        p_created["state"] = CaseState.CREATED.value
+        p_created["terminal_reason"] = "reason"
+        with self.assertRaises(ContractValidationError):
+            RunState.from_dict(p_created)
+
+        # 3. needs_info state requires non-empty question
+        p_ni = dict(self.valid_payload)
+        p_ni["state"] = CaseState.NEEDS_INFO.value
+        p_ni["terminal_reason"] = "Qual o codigo do cupom?"
+        rs_ni = RunState.from_dict(p_ni)
+        self.assertEqual(rs_ni.terminal_reason, "Qual o codigo do cupom?")
+
+        p_ni["terminal_reason"] = None
+        with self.assertRaises(ContractValidationError):
+            RunState.from_dict(p_ni)
+        p_ni["terminal_reason"] = "   "
+        with self.assertRaises(ContractValidationError):
+            RunState.from_dict(p_ni)
+
+        # 4. infra_error requires non-empty detail
+        p_ie = dict(self.valid_payload)
+        p_ie["state"] = CaseState.INFRA_ERROR.value
+        p_ie["terminal_reason"] = "Sandbox container timed out after 600s"
+        rs_ie = RunState.from_dict(p_ie)
+        self.assertEqual(rs_ie.terminal_reason, "Sandbox container timed out after 600s")
+
+        p_ie["terminal_reason"] = None
+        with self.assertRaises(ContractValidationError):
+            RunState.from_dict(p_ie)
+
+        # 5. blocked requires enum (limit_exceeded, not_reproduced, patch_rejected) + optional detail
+        p_blk = dict(self.valid_payload)
+        p_blk["state"] = CaseState.BLOCKED.value
+
+        valid_blocked_reasons = [
+            "limit_exceeded",
+            "not_reproduced",
+            "patch_rejected",
+            "limit_exceeded: max fix attempts reached",
+            "not_reproduced: assertion did not fail on test",
+            "patch_rejected: touched test files in fix",
+        ]
+        for br in valid_blocked_reasons:
+            with self.subTest(reason=br):
+                p_blk["terminal_reason"] = br
+                rs_b = RunState.from_dict(p_blk)
+                self.assertEqual(rs_b.terminal_reason, br)
+
+        invalid_blocked_reasons = [
+            None,
+            "",
+            "   ",
+            "unknown_reason",
+            "invalid_code: detail",
+            "limit_exceeded:",  # empty detail after colon
+            "not_reproduced:   ",
+        ]
+        for bad_br in invalid_blocked_reasons:
+            with self.subTest(bad_reason=bad_br):
+                p_blk["terminal_reason"] = bad_br
+                with self.assertRaises(ContractValidationError):
+                    RunState.from_dict(p_blk)
 
     def test_verified_terminal_state_does_not_require_reason(self) -> None:
-        """Verified terminal state does not require a terminal_reason (RFC-0001 §4)."""
+        """Verified terminal state does not allow a terminal_reason (RFC-0001 §4)."""
         payload = dict(self.valid_payload)
         payload["state"] = CaseState.VERIFIED.value
         payload["terminal_reason"] = None

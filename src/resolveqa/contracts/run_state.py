@@ -15,6 +15,7 @@ from .validators import (
     require_optional_non_empty_str,
     require_tuple_of_strings,
     require_utc_iso8601_timestamp,
+    validate_terminal_reason,
 )
 
 
@@ -79,11 +80,9 @@ class RunState:
         object.__setattr__(
             self, "updated_at", require_utc_iso8601_timestamp(self.updated_at, "updated_at")
         )
-        object.__setattr__(
-            self,
-            "terminal_reason",
-            require_optional_non_empty_str(self.terminal_reason, "terminal_reason"),
-        )
+        validated_reason = validate_terminal_reason(parsed_state, self.terminal_reason)
+        object.__setattr__(self, "terminal_reason", validated_reason)
+
         object.__setattr__(
             self,
             "base_revision",
@@ -110,11 +109,7 @@ class RunState:
 
     def validate(self) -> None:
         """Validate RunState invariants."""
-        if self.state in TERMINAL_STATES and self.state != CaseState.VERIFIED:
-            if self.terminal_reason is None:
-                raise ContractValidationError(
-                    f"Terminal state '{self.state.value}' different from verified requires terminal_reason."
-                )
+        pass
 
     def transition_to(
         self,

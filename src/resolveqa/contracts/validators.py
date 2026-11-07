@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Optional, TypeVar
 
+from .enums import BlockedReason, CaseState, TERMINAL_STATES
 from .errors import ContractValidationError
 
 E = TypeVar("E", bound=Enum)
@@ -102,4 +103,56 @@ def require_tuple_of_strings(items: Any, field_name: str) -> tuple[str, ...]:
             f"Field '{field_name}' must be a sequence of strings, got {type(items).__name__}."
         )
     return tuple(require_non_empty_str(item, f"{field_name}[{i}]") for i, item in enumerate(items))
+
+
+def validate_terminal_reason(state: CaseState, terminal_reason: Optional[str]) -> Optional[str]:
+    """Validate terminal_reason structured invariants by state (RFC-0001 §4)."""
+    if state == CaseState.VERIFIED:
+        if terminal_reason is not None:
+            raise ContractValidationError("Verified terminal state must not have a terminal_reason.")
+        return None
+
+    if state not in TERMINAL_STATES:
+        if terminal_reason is not None:
+            raise ContractValidationError(
+                f"Non-terminal state '{state.value}' must not have a terminal_reason."
+            )
+        return None
+
+    if state == CaseState.NEEDS_INFO:
+        if terminal_reason is None or not isinstance(terminal_reason, str) or not terminal_reason.strip():
+            raise ContractValidationError(
+                "Terminal state 'needs_info' requires a non-empty question as terminal_reason."
+            )
+        return terminal_reason
+
+    if state == CaseState.INFRA_ERROR:
+        if terminal_reason is None or not isinstance(terminal_reason, str) or not terminal_reason.strip():
+            raise ContractValidationError(
+                "Terminal state 'infra_error' requires a non-empty detail as terminal_reason."
+            )
+        return terminal_reason
+
+    if state == CaseState.BLOCKED:
+        if terminal_reason is None or not isinstance(terminal_reason, str) or not terminal_reason.strip():
+            raise ContractValidationError(
+                "Terminal state 'blocked' requires a non-empty terminal_reason."
+            )
+        parts = terminal_reason.split(":", 1)
+        code = parts[0].strip()
+        valid_codes = {r.value for r in BlockedReason}
+        if code not in valid_codes:
+            raise ContractValidationError(
+                f"Blocked terminal_reason must specify one of {sorted(valid_codes)}, got {code!r}."
+            )
+        if len(parts) > 1:
+            detail = parts[1].strip()
+            if not detail:
+                raise ContractValidationError(
+                    "Optional detail following ':' in blocked terminal_reason must not be empty."
+                )
+        return terminal_reason
+
+    return terminal_reason
+
 

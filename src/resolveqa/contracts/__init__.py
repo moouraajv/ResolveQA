@@ -1,6 +1,7 @@
 """Contracts package for ResolveQA (RFC-0001 §3)."""
 
 from .enums import (
+    BlockedReason,
     CaseState,
     ChannelType,
     DeliveryKind,
@@ -40,6 +41,7 @@ from .stages import (
 
 __all__ = [
     # Enums & Constants
+    "BlockedReason",
     "CaseState",
     "ChannelType",
     "DeliveryKind",
