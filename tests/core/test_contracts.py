@@ -1,6 +1,7 @@
 """Unit tests and regression test suite for ResolveQA contracts (RFC-0001 §3)."""
 
 from dataclasses import FrozenInstanceError
+from typing import Any
 import unittest
 
 from resolveqa.contracts import (
