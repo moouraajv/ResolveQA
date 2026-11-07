@@ -268,8 +268,9 @@ class DeterministicMockLLM:
         model: str = "deterministic-mock-v1",
         response_override: Optional[str | Callable[[str, list[dict[str, str]], Optional[dict[str, Any]]], str]] = None,
     ) -> None:
-        self._case = case
-        self._standalone_attempts = Attempts()
+        self._case: Optional[RunState] = None
+        self._calls_by_case: dict[str, int] = {}
+        self._standalone_calls: int = 0
         self.max_llm_calls = (
             int(max_llm_calls) if max_llm_calls is not None else load_max_llm_calls()
         )
@@ -277,14 +278,35 @@ class DeterministicMockLLM:
         self.model = model
         self.response_override = response_override
         self.audit_log: list[dict[str, Any]] = []
+        if case is not None:
+            self.bind_case(case)
 
     def bind_case(self, case: RunState) -> None:
-        """Bind a `RunState` instance."""
+        """Bind a `RunState` reference without mutating it."""
         self._case = case
+        prev = self._calls_by_case.get(case.case_id, 0)
+        self._calls_by_case[case.case_id] = max(prev, int(case.attempts.llm_calls))
+
+    def get_llm_calls(self, case: Optional[RunState | str] = None) -> int:
+        """Return the total LLM calls consumed for the given case (or bound/standalone context)."""
+        if isinstance(case, str):
+            return self._calls_by_case.get(case, 0)
+        target_case = case if case is not None else self._case
+        if target_case is not None:
+            return max(
+                self._calls_by_case.get(target_case.case_id, 0),
+                int(target_case.attempts.llm_calls),
+            )
+        return self._standalone_calls
+
+    @property
+    def llm_calls(self) -> int:
+        return self.get_llm_calls()
 
     @property
     def attempts(self) -> Attempts:
-        return self._case.attempts if self._case is not None else self._standalone_attempts
+        fix_count = int(self._case.attempts.fix) if self._case is not None else 0
+        return Attempts(fix=fix_count, llm_calls=self.get_llm_calls())
 
     def complete(
         self,
@@ -296,9 +318,15 @@ class DeterministicMockLLM:
     ) -> LLMResult:
         """Deterministically produce an `LLMResult` while enforcing `max_llm_calls`, schema validation, and secret scrubbing."""
         active_case = case if case is not None else self._case
-        attempts_ref = active_case.attempts if active_case is not None else self._standalone_attempts
+        if active_case is not None:
+            current_calls = max(
+                self._calls_by_case.get(active_case.case_id, 0),
+                int(active_case.attempts.llm_calls),
+            )
+        else:
+            current_calls = self._standalone_calls
 
-        if attempts_ref.llm_calls >= self.max_llm_calls:
+        if current_calls >= self.max_llm_calls:
             raise LLMLimitExceededError(self.max_llm_calls)
 
         if not isinstance(purpose, str) or not purpose.strip():
@@ -314,7 +342,11 @@ class DeterministicMockLLM:
             for m in messages
         ]
 
-        attempts_ref.llm_calls += 1
+        new_call_count = current_calls + 1
+        if active_case is not None:
+            self._calls_by_case[active_case.case_id] = new_call_count
+        else:
+            self._standalone_calls = new_call_count
 
         if self.response_override is not None:
             if callable(self.response_override):
@@ -343,10 +375,12 @@ class DeterministicMockLLM:
             model=self.model,
             mock=True,
         )
+        object.__setattr__(result, "llm_calls", new_call_count)
+        object.__setattr__(result, "calls_consumed", 1)
 
         self.audit_log.append(
             {
-                "call_index": attempts_ref.llm_calls,
+                "call_index": new_call_count,
                 "case_id": active_case.case_id if active_case is not None else None,
                 "purpose": purpose.strip(),
                 "messages": sanitized_messages,
