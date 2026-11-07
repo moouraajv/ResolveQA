@@ -1,4 +1,4 @@
-"""Checkout pricing module for demo-target (RFC-0001 §9 D1/D4)."""
+"""Checkout pricing module for order totals and promotional coupons."""
 
 from __future__ import annotations
 
@@ -20,11 +20,7 @@ def calculate_total(
     coupon_percent: float = 0.0,
     coupon_code: str | None = None,
 ) -> float:
-    """Calculate final checkout total given subtotal and optional coupon discount.
-
-    Intentional defect (D1-a): discount is calculated from coupon_percent/coupon_code,
-    but subtotal is returned without subtracting discount.
-    """
+    """Calculate final checkout total given subtotal and optional coupon discount."""
     if subtotal < 0:
         raise ValueError("subtotal must be non-negative")
 
@@ -36,7 +32,6 @@ def calculate_total(
         raise ValueError("coupon_percent must be between 0 and 100")
 
     discount = round(float(subtotal) * (pct / 100.0), 2)
-    # Defect D1-a: ignores `discount` and returns `subtotal` unchanged
     return round(float(subtotal), 2)
 
 
