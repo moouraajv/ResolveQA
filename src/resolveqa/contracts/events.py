@@ -14,20 +14,25 @@ from .validators import (
     require_int,
     require_non_empty_str,
     require_optional_non_empty_str,
+    require_tuple_of_strings,
     require_utc_iso8601_timestamp,
 )
 
 
-@dataclass
+@dataclass(frozen=True)
 class ReplayRef:
     """Reference to the original case in a replay run (RFC-0001 §3.2, RNF-07)."""
     case_id: str
     original_ts: str
 
     def __post_init__(self) -> None:
-        self.case_id = require_non_empty_str(self.case_id, "replay_of.case_id")
-        self.original_ts = require_utc_iso8601_timestamp(
-            self.original_ts, "replay_of.original_ts"
+        object.__setattr__(
+            self, "case_id", require_non_empty_str(self.case_id, "replay_of.case_id")
+        )
+        object.__setattr__(
+            self,
+            "original_ts",
+            require_utc_iso8601_timestamp(self.original_ts, "replay_of.original_ts"),
         )
 
     def to_dict(self) -> dict[str, str]:
@@ -52,7 +57,7 @@ class ReplayRef:
         )
 
 
-@dataclass
+@dataclass(frozen=True)
 class Event:
     """Append-only audit event for case progression (RFC-0001 §3.2, RNF-04)."""
     event_id: str
@@ -64,35 +69,34 @@ class Event:
     from_state: Optional[CaseState] = None
     to_state: Optional[CaseState] = None
     reason: Optional[str] = None
-    evidence_refs: list[str] = field(default_factory=list)
+    evidence_refs: tuple[str, ...] = ()
     replay_of: Optional[ReplayRef] = None
 
     def __post_init__(self) -> None:
-        self.event_id = require_non_empty_str(self.event_id, "event_id")
-        self.case_id = require_non_empty_str(self.case_id, "case_id")
-        self.seq = require_int(self.seq, "seq", min_value=0)
-        self.ts = require_utc_iso8601_timestamp(self.ts, "ts")
-        self.source = parse_enum(EventSource, self.source, "source")
-        self.type = parse_enum(EventType, self.type, "type")
-        self.from_state = parse_optional_enum(CaseState, self.from_state, "from_state")
-        self.to_state = parse_optional_enum(CaseState, self.to_state, "to_state")
-        self.reason = require_optional_non_empty_str(self.reason, "reason")
+        object.__setattr__(self, "event_id", require_non_empty_str(self.event_id, "event_id"))
+        object.__setattr__(self, "case_id", require_non_empty_str(self.case_id, "case_id"))
+        object.__setattr__(self, "seq", require_int(self.seq, "seq", min_value=0))
+        object.__setattr__(self, "ts", require_utc_iso8601_timestamp(self.ts, "ts"))
+        object.__setattr__(self, "source", parse_enum(EventSource, self.source, "source"))
+        object.__setattr__(self, "type", parse_enum(EventType, self.type, "type"))
+        object.__setattr__(
+            self, "from_state", parse_optional_enum(CaseState, self.from_state, "from_state")
+        )
+        object.__setattr__(
+            self, "to_state", parse_optional_enum(CaseState, self.to_state, "to_state")
+        )
+        object.__setattr__(self, "reason", require_optional_non_empty_str(self.reason, "reason"))
 
         if isinstance(self.replay_of, dict):
-            self.replay_of = ReplayRef.from_dict(self.replay_of)
+            object.__setattr__(self, "replay_of", ReplayRef.from_dict(self.replay_of))
         elif self.replay_of is not None and not isinstance(self.replay_of, ReplayRef):
             raise ContractValidationError(
                 f"'replay_of' must be a ReplayRef or dict, got {type(self.replay_of).__name__}."
             )
 
-        if not isinstance(self.evidence_refs, list):
-            raise ContractValidationError(
-                f"'evidence_refs' must be a list, got {type(self.evidence_refs).__name__}."
-            )
-        self.evidence_refs = [
-            require_non_empty_str(ref, f"evidence_refs[{i}]")
-            for i, ref in enumerate(self.evidence_refs)
-        ]
+        object.__setattr__(
+            self, "evidence_refs", require_tuple_of_strings(self.evidence_refs, "evidence_refs")
+        )
 
         self.validate()
 
@@ -148,7 +152,7 @@ class Event:
             from_state=data.get("from_state"),
             to_state=data.get("to_state"),
             reason=data.get("reason"),
-            evidence_refs=data.get("evidence_refs", []),
+            evidence_refs=tuple(data.get("evidence_refs", ())),
             replay_of=replay_of,
         )
 

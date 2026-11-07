@@ -1,5 +1,6 @@
 """Unit tests and regression test suite for ResolveQA contracts (RFC-0001 §3)."""
 
+from dataclasses import FrozenInstanceError
 import unittest
 
 from resolveqa.contracts import (
@@ -29,6 +30,62 @@ from resolveqa.contracts import (
     Verdict,
     VerdictResult,
 )
+
+
+class TestImmutabilityAndFrozenContract(unittest.TestCase):
+    """Test requirement 1: dataclasses are frozen=True and collections are immutable."""
+
+    def test_run_state_is_frozen_and_collections_immutable(self) -> None:
+        rs = RunState(
+            case_id="c-1",
+            client_id="client-1",
+            repo_ref="repo/1",
+            channel=ChannelType.API,
+            report_text="text",
+            state=CaseState.CREATED,
+            created_at="2026-11-07T12:00:00Z",
+            updated_at="2026-11-07T12:00:00Z",
+            evidence_ids=("ev-1", "ev-2"),
+        )
+        self.assertIsInstance(rs.evidence_ids, tuple)
+        with self.assertRaises((FrozenInstanceError, AttributeError)):
+            rs.state = CaseState.TRIAGING  # type: ignore
+
+        # transition_to produces a new instance and does not mutate original
+        rs2 = rs.transition_to(CaseState.TRIAGING, updated_at="2026-11-07T12:01:00Z")
+        self.assertEqual(rs.state, CaseState.CREATED)
+        self.assertEqual(rs2.state, CaseState.TRIAGING)
+        self.assertIsNot(rs, rs2)
+
+    def test_attempts_is_frozen(self) -> None:
+        att = Attempts(fix=1, llm_calls=2)
+        with self.assertRaises((FrozenInstanceError, AttributeError)):
+            att.fix = 2  # type: ignore
+
+    def test_other_dataclasses_are_frozen_and_have_immutable_tuples(self) -> None:
+        tr = TriageRecord(input="i", expected="e", observed="o", suspect_files=("f1.py",))
+        self.assertIsInstance(tr.suspect_files, tuple)
+        with self.assertRaises((FrozenInstanceError, AttributeError)):
+            tr.input = "new"  # type: ignore
+
+        patch = Patch(diff_ref="diff-1", files_changed=("f1.py",))
+        self.assertIsInstance(patch.files_changed, tuple)
+        with self.assertRaises((FrozenInstanceError, AttributeError)):
+            patch.diff_ref = "new"  # type: ignore
+
+        verdict = Verdict(
+            before=ContractTestRun("pytest", 1, 1.0, "l1"),
+            after=ContractTestRun("pytest", 0, 1.0, "l2"),
+            suite=ContractTestRun("pytest", 0, 2.0, "l3"),
+            base_revision="base",
+            fix_revision="fix",
+            result=VerdictResult.VERIFIED,
+            reasons=("all good",),
+        )
+        self.assertIsInstance(verdict.reasons, tuple)
+        with self.assertRaises((FrozenInstanceError, AttributeError)):
+            verdict.result = VerdictResult.REJECTED  # type: ignore
+
 
 
 class TestRunStateContract(unittest.TestCase):
@@ -64,7 +121,7 @@ class TestRunStateContract(unittest.TestCase):
         self.assertEqual(run_state.attempts.llm_calls, 0)
         self.assertEqual(run_state.base_revision, "abc1234")
         self.assertIsNone(run_state.fix_revision)
-        self.assertEqual(run_state.evidence_ids, ["ev-1", "ev-2"])
+        self.assertEqual(run_state.evidence_ids, ("ev-1", "ev-2"))
 
     def test_client_id_must_be_strictly_non_empty_str(self) -> None:
         """Finding 2: client_id cannot become string from numbers, objects, empty, or whitespace."""
@@ -230,7 +287,7 @@ class TestEventContract(unittest.TestCase):
         self.assertEqual(event.from_state, CaseState.CREATED)
         self.assertEqual(event.to_state, CaseState.TRIAGING)
         self.assertEqual(event.reason, "Starting triage")
-        self.assertEqual(event.evidence_refs, ["ev-1"])
+        self.assertEqual(event.evidence_refs, ("ev-1",))
         self.assertIsNone(event.replay_of)
 
     def test_event_rejects_invalid_enums(self) -> None:
@@ -398,6 +455,7 @@ class TestStageContracts(unittest.TestCase):
         })
         self.assertEqual(tr.expected, "180.00")
         self.assertEqual(tr.confidence, 0.95)
+        self.assertEqual(tr.suspect_files, ("cart.py",))
 
         with self.assertRaises(ContractValidationError):
             TriageRecord(input="a", expected="b", observed="c", confidence=1.5)
@@ -406,7 +464,7 @@ class TestStageContracts(unittest.TestCase):
             "missing_fields": ["coupon_code"],
             "question_to_support": "Qual o codigo do cupom utilizado?",
         })
-        self.assertEqual(ni.missing_fields, ["coupon_code"])
+        self.assertEqual(ni.missing_fields, ("coupon_code",))
         self.assertIn("codigo", ni.question_to_support)
 
     def test_repro_result_valid_and_invalid_outcome(self) -> None:
@@ -440,6 +498,7 @@ class TestStageContracts(unittest.TestCase):
         }
         patch = Patch.from_dict(valid_payload)
         self.assertFalse(patch.touches_tests)
+        self.assertEqual(patch.files_changed, ("cart.py",))
 
         for invalid_val in ["false", "true", 0, 1, None]:
             with self.subTest(field="touches_tests", val=invalid_val):
@@ -552,6 +611,7 @@ class TestStageContracts(unittest.TestCase):
             "evidence_refs": ["ev-1"],
         })
         self.assertEqual(deliv.kind, DeliveryKind.LOCAL_PACKAGE)
+        self.assertEqual(deliv.evidence_refs, ("ev-1",))
 
         with self.assertRaises(ContractValidationError):
             DeliveryResult.from_dict({

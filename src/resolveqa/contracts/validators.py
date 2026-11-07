@@ -93,3 +93,13 @@ def require_utc_iso8601_timestamp(value: Any, field_name: str) -> str:
         )
 
     return value
+
+
+def require_tuple_of_strings(items: Any, field_name: str) -> tuple[str, ...]:
+    """Validate and convert a sequence into an immutable tuple of non-empty strings."""
+    if not isinstance(items, (list, tuple)):
+        raise ContractValidationError(
+            f"Field '{field_name}' must be a sequence of strings, got {type(items).__name__}."
+        )
+    return tuple(require_non_empty_str(item, f"{field_name}[{i}]") for i, item in enumerate(items))
+

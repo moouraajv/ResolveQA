@@ -17,7 +17,7 @@ from .validators import (
 )
 
 
-@dataclass
+@dataclass(frozen=True)
 class Evidence:
     """Stored artifact descriptor linked to a case run (RFC-0001 §3.4, RNF-04)."""
     evidence_id: str
@@ -30,14 +30,20 @@ class Evidence:
     simulated: bool = False
 
     def __post_init__(self) -> None:
-        self.evidence_id = require_non_empty_str(self.evidence_id, "evidence_id")
-        self.case_id = require_non_empty_str(self.case_id, "case_id")
-        self.kind = parse_enum(EvidenceKind, self.kind, "kind")
-        self.path = require_non_empty_str(self.path, "path")
-        self.sha256 = require_non_empty_str(self.sha256, "sha256")
-        self.created_at = require_utc_iso8601_timestamp(self.created_at, "created_at")
-        self.revision = require_optional_non_empty_str(self.revision, "revision")
-        self.simulated = require_bool(self.simulated, "simulated")
+        object.__setattr__(
+            self, "evidence_id", require_non_empty_str(self.evidence_id, "evidence_id")
+        )
+        object.__setattr__(self, "case_id", require_non_empty_str(self.case_id, "case_id"))
+        object.__setattr__(self, "kind", parse_enum(EvidenceKind, self.kind, "kind"))
+        object.__setattr__(self, "path", require_non_empty_str(self.path, "path"))
+        object.__setattr__(self, "sha256", require_non_empty_str(self.sha256, "sha256"))
+        object.__setattr__(
+            self, "created_at", require_utc_iso8601_timestamp(self.created_at, "created_at")
+        )
+        object.__setattr__(
+            self, "revision", require_optional_non_empty_str(self.revision, "revision")
+        )
+        object.__setattr__(self, "simulated", require_bool(self.simulated, "simulated"))
 
     def to_dict(self) -> dict[str, Any]:
         return {
