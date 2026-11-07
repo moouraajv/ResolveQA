@@ -1,4 +1,4 @@
-"""Existing unit tests for demo-target checkout module (does not cover coupon discount defect)."""
+"""Unit tests for the checkout pricing module."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from checkout import calculate_total, format_brl
 
 
 class TestCheckoutBase(unittest.TestCase):
-    """Baseline checkout tests that pass on the defective version."""
+    """Standard checkout validation and formatting tests."""
 
     def test_subtotal_without_coupon(self) -> None:
         self.assertEqual(calculate_total(200.0), 200.0)
