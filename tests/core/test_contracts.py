@@ -63,8 +63,28 @@ class TestImmutabilityAndFrozenContract(unittest.TestCase):
             evidence_ids=("ev-1", "ev-2"),
         )
         self.assertIsInstance(rs.evidence_ids, tuple)
-        with self.assertRaises((FrozenInstanceError, AttributeError)):
+        with self.assertRaises(FrozenInstanceError):
             rs.state = CaseState.TRIAGING  # type: ignore
+
+        # Input list is converted to immutable tuple, and mutating original list does not affect object
+        input_list = ["ev-1", "ev-2"]
+        rs_mut = RunState(
+            case_id="c-1",
+            client_id="client-1",
+            repo_ref="repo/1",
+            channel=ChannelType.API,
+            report_text="text",
+            state=CaseState.CREATED,
+            created_at="2026-11-07T12:00:00Z",
+            updated_at="2026-11-07T12:00:00Z",
+            evidence_ids=input_list,
+        )
+        self.assertIsInstance(rs_mut.evidence_ids, tuple)
+        self.assertEqual(rs_mut.evidence_ids, ("ev-1", "ev-2"))
+        input_list.append("ev-3")
+        self.assertEqual(rs_mut.evidence_ids, ("ev-1", "ev-2"))
+        input_list[0] = "mutated"
+        self.assertEqual(rs_mut.evidence_ids, ("ev-1", "ev-2"))
 
         # transition_to produces a new instance and does not mutate original
         rs2 = rs.transition_to(CaseState.TRIAGING, updated_at="2026-11-07T12:01:00Z")
@@ -148,13 +168,27 @@ class TestRunStateContract(unittest.TestCase):
                     RunState.from_dict(payload)
 
     def test_missing_required_fields_in_from_dict(self) -> None:
-        """Finding 2: missing keys in payload must raise ContractValidationError."""
-        for field_name in ["case_id", "client_id", "repo_ref", "channel", "report_text", "state"]:
+        """Finding 2: missing keys in payload must raise ContractValidationError (dict and JSON)."""
+        import json
+
+        required_fields = [
+            "case_id",
+            "client_id",
+            "repo_ref",
+            "channel",
+            "report_text",
+            "state",
+            "created_at",
+            "updated_at",
+        ]
+        for field_name in required_fields:
             with self.subTest(missing_field=field_name):
                 payload = dict(self.valid_payload)
                 del payload[field_name]
                 with self.assertRaises(ContractValidationError):
                     RunState.from_dict(payload)
+                with self.assertRaises(ContractValidationError):
+                    RunState.from_json(json.dumps(payload))
 
     def test_reject_invalid_enums_in_run_state(self) -> None:
         """Finding 1: RunState rejects state='verifed' and channel='bad'."""
@@ -632,13 +666,25 @@ class TestEventContract(unittest.TestCase):
             ),
         ]
 
-        current_state = CaseState.CREATED
+        # Reconstruct RunState using transition_to driven by StateChanged events
+        run_state = RunState(
+            case_id="case-1",
+            client_id="client-1",
+            repo_ref="repo/1",
+            channel=ChannelType.API,
+            report_text="Initial report",
+            state=CaseState.CREATED,
+            created_at="2026-11-07T10:00:00Z",
+            updated_at="2026-11-07T10:00:00Z",
+        )
+
         for ev in events:
             if ev.type == EventType.STATE_CHANGED:
-                self.assertEqual(ev.from_state, current_state)
-                current_state = ev.to_state
+                self.assertEqual(ev.from_state, run_state.state)
+                run_state = run_state.transition_to(ev.to_state, updated_at=ev.ts)
+                self.assertEqual(run_state.state, ev.to_state)
 
-        self.assertEqual(current_state, CaseState.VERIFIED)
+        self.assertEqual(run_state.state, CaseState.VERIFIED)
 
     def test_event_json_serialization_roundtrip(self) -> None:
         event = Event.from_dict(self.valid_event_payload)
@@ -647,6 +693,39 @@ class TestEventContract(unittest.TestCase):
 
         self.assertEqual(event.to_dict(), restored.to_dict())
         self.assertEqual(restored.event_id, "evt-001")
+
+    def test_event_replay_started_roundtrip_with_replay_ref(self) -> None:
+        """Requirement 7: Event ReplayStarted with populated ReplayRef and evidence_refs roundtrip."""
+        replay_event_payload = {
+            "event_id": "evt-replay-999",
+            "case_id": "case-replay-100",
+            "seq": 42,
+            "ts": "2026-11-07T14:30:00Z",
+            "source": "orchestrator",
+            "type": "ReplayStarted",
+            "reason": "Replaying failed step",
+            "evidence_refs": ["ev-replay-001", "ev-replay-002"],
+            "replay_of": {
+                "case_id": "case-orig-050",
+                "original_ts": "2026-11-06T10:00:00Z",
+            },
+        }
+        event = Event.from_dict(replay_event_payload)
+        self.assertIsInstance(event.replay_of, ReplayRef)
+        self.assertEqual(event.replay_of.case_id, "case-orig-050")
+        self.assertEqual(event.replay_of.original_ts, "2026-11-06T10:00:00Z")
+        self.assertEqual(event.evidence_refs, ("ev-replay-001", "ev-replay-002"))
+
+        # Roundtrip to JSON and back
+        json_str = event.to_json()
+        restored = Event.from_json(json_str)
+
+        self.assertEqual(event, restored)
+        self.assertEqual(event.to_dict(), restored.to_dict())
+        self.assertIsNotNone(restored.replay_of)
+        self.assertEqual(restored.replay_of.case_id, "case-orig-050")
+        self.assertEqual(restored.replay_of.original_ts, "2026-11-06T10:00:00Z")
+        self.assertEqual(restored.evidence_refs, ("ev-replay-001", "ev-replay-002"))
 
 
 class TestEvidenceContract(unittest.TestCase):
