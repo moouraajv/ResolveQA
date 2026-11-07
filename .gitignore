@@ -1,0 +1,15 @@
+# Runtime artifacts and evidence store (RFC-0001 §3.4)
+runs/
+
+# Virtual environments
+.venv/
+venv/
+
+# Python bytecode and caches
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+*.egg-info/
+build/
+dist/
