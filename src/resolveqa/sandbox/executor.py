@@ -14,13 +14,22 @@ from typing import Iterator
 
 from resolveqa.contracts import ExecResult
 
-REPO_ROOT = Path(__file__).resolve().parents[3]
+
+def _discover_default_base_root() -> Path:
+    """Locate repository root by searching upwards for pyproject.toml or falling back safely."""
+    here = Path(__file__).resolve()
+    for parent in here.parents:
+        if (parent / "pyproject.toml").is_file() or (parent / ".git").exists():
+            return parent
+    return here.parents[3]
+
 
 _SECRET_PATTERNS = [
     re.compile(r"\b(gh[pousr]_[A-Za-z0-9_]{8,})\b"),
     re.compile(r"\b(github_pat_[A-Za-z0-9_]{8,})\b"),
     re.compile(r"\b(sk-[A-Za-z0-9_-]{8,})\b"),
     re.compile(r"\b(AIza[A-Za-z0-9_-]{8,})\b"),
+    re.compile(r"\b(AKIA[0-9A-Z]{16})\b"),
 ]
 
 
@@ -38,29 +47,65 @@ class LocalSandbox:
     """Execute target repository commands in an isolated temporary copy with a clean environment."""
 
     def __init__(self, base_root: Path | str | None = None, default_timeout_s: float = 600.0) -> None:
-        self.base_root = Path(base_root).resolve() if base_root is not None else REPO_ROOT
+        self.base_root = Path(base_root).resolve() if base_root is not None else _discover_default_base_root()
         self.default_timeout_s = float(default_timeout_s)
 
     def resolve_workdir(self, workdir_ref: str | Path) -> Path:
-        """Resolve a repository reference or path to an existing directory."""
-        candidate = Path(workdir_ref)
-        if not candidate.is_absolute():
-            candidate = (self.base_root / candidate).resolve()
-        else:
-            candidate = candidate.resolve()
-        if not candidate.is_dir():
-            raise FileNotFoundError(f"Sandbox workdir_ref does not exist or is not a directory: {workdir_ref}")
-        return candidate
+        """Resolve a relative repository reference strictly inside `base_root`, rejecting '..', absolutes, and external symlinks."""
+        raw_str = str(workdir_ref).strip()
+        if not raw_str:
+            raise ValueError("workdir_ref must be a non-empty relative path inside base_root")
+
+        raw_path = Path(raw_str)
+        if raw_path.is_absolute() or raw_str.startswith(("/", "\\")):
+            raise ValueError(f"Absolute paths are not allowed for workdir_ref: {workdir_ref!r}")
+
+        if ".." in raw_path.parts or raw_path.parts == (".",):
+            raise ValueError(f"Parent traversal ('..') or current root ('.') is not allowed in workdir_ref: {workdir_ref!r}")
+
+        # Walk component by component from base_root to detect any symlink escaping base_root
+        current = self.base_root
+        for part in raw_path.parts:
+            current = current / part
+            if current.is_symlink():
+                resolved_target = current.resolve()
+                if not resolved_target.is_relative_to(self.base_root):
+                    raise ValueError(
+                        f"Symlink in workdir_ref points outside base_root: {workdir_ref!r} -> {resolved_target}"
+                    )
+
+        resolved = (self.base_root / raw_path).resolve()
+        if not resolved.is_relative_to(self.base_root) or resolved == self.base_root:
+            raise ValueError(f"workdir_ref resolves outside base_root: {workdir_ref!r}")
+
+        if not resolved.is_dir():
+            raise FileNotFoundError(f"Sandbox workdir_ref does not exist or is not a directory: {workdir_ref!r}")
+
+        return resolved
+
+    @staticmethod
+    def _validate_no_external_symlinks(source_dir: Path) -> None:
+        """Ensure no symlink inside `source_dir` resolves outside `source_dir`."""
+        resolved_root = source_dir.resolve()
+        for entry in source_dir.rglob("*"):
+            if entry.is_symlink():
+                target = entry.resolve()
+                if not target.is_relative_to(resolved_root):
+                    raise ValueError(
+                        f"Symlink inside workdir points outside repository tree: {entry.relative_to(source_dir)} -> {target}"
+                    )
 
     @contextlib.contextmanager
     def isolated_copy(self, workdir_ref: str | Path) -> Iterator[Path]:
-        """Yield a temporary isolated copy of `workdir_ref` that is cleaned up on exit."""
+        """Yield a temporary isolated copy of `workdir_ref` (preserving only internal symlinks)."""
         source_dir = self.resolve_workdir(workdir_ref)
+        self._validate_no_external_symlinks(source_dir)
         with tempfile.TemporaryDirectory(prefix="resolveqa_sandbox_") as tmp_root:
             dest_dir = Path(tmp_root) / "workspace"
             shutil.copytree(
                 source_dir,
                 dest_dir,
+                symlinks=True,
                 ignore=shutil.ignore_patterns(".git", "__pycache__", ".pytest_cache", ".venv", "*.pyc"),
             )
             yield dest_dir
@@ -100,16 +145,6 @@ class LocalSandbox:
             )
 
         try:
-            source_dir = self.resolve_workdir(workdir_ref)
-        except Exception as err:
-            return ExecResult(
-                exit_code=2,
-                stdout_ref="",
-                stderr_ref=redact_secrets(str(err)),
-                timed_out=False,
-            )
-
-        try:
             argv = shlex.split(command)
         except ValueError as err:
             return ExecResult(
@@ -130,41 +165,49 @@ class LocalSandbox:
         if argv[0] in {"python", "python3"}:
             argv[0] = sys.executable
 
-        with self.isolated_copy(source_dir) as workspace_dir:
-            clean_env = self.build_clean_env(workspace_dir)
-            try:
-                completed = subprocess.run(
-                    argv,
-                    cwd=str(workspace_dir),
-                    env=clean_env,
-                    shell=False,
-                    capture_output=True,
-                    text=True,
-                    timeout=effective_timeout,
-                    check=False,
-                )
-                return ExecResult(
-                    exit_code=int(completed.returncode),
-                    stdout_ref=redact_secrets(completed.stdout or ""),
-                    stderr_ref=redact_secrets(completed.stderr or ""),
-                    timed_out=False,
-                )
-            except subprocess.TimeoutExpired as exc:
-                raw_out = exc.stdout.decode("utf-8", errors="replace") if isinstance(exc.stdout, bytes) else (exc.stdout or "")
-                raw_err = exc.stderr.decode("utf-8", errors="replace") if isinstance(exc.stderr, bytes) else (exc.stderr or "")
-                return ExecResult(
-                    exit_code=124,
-                    stdout_ref=redact_secrets(raw_out),
-                    stderr_ref=redact_secrets(raw_err or f"Command timed out after {effective_timeout}s"),
-                    timed_out=True,
-                )
-            except OSError as exc:
-                return ExecResult(
-                    exit_code=127,
-                    stdout_ref="",
-                    stderr_ref=redact_secrets(str(exc)),
-                    timed_out=False,
-                )
+        try:
+            with self.isolated_copy(workdir_ref) as workspace_dir:
+                clean_env = self.build_clean_env(workspace_dir)
+                try:
+                    completed = subprocess.run(
+                        argv,
+                        cwd=str(workspace_dir),
+                        env=clean_env,
+                        shell=False,
+                        capture_output=True,
+                        text=True,
+                        timeout=effective_timeout,
+                        check=False,
+                    )
+                    return ExecResult(
+                        exit_code=int(completed.returncode),
+                        stdout_ref=redact_secrets(completed.stdout or ""),
+                        stderr_ref=redact_secrets(completed.stderr or ""),
+                        timed_out=False,
+                    )
+                except subprocess.TimeoutExpired as exc:
+                    raw_out = exc.stdout.decode("utf-8", errors="replace") if isinstance(exc.stdout, bytes) else (exc.stdout or "")
+                    raw_err = exc.stderr.decode("utf-8", errors="replace") if isinstance(exc.stderr, bytes) else (exc.stderr or "")
+                    return ExecResult(
+                        exit_code=124,
+                        stdout_ref=redact_secrets(raw_out),
+                        stderr_ref=redact_secrets(raw_err or f"Command timed out after {effective_timeout}s"),
+                        timed_out=True,
+                    )
+                except OSError as exc:
+                    return ExecResult(
+                        exit_code=127,
+                        stdout_ref="",
+                        stderr_ref=redact_secrets(str(exc)),
+                        timed_out=False,
+                    )
+        except Exception as err:
+            return ExecResult(
+                exit_code=2,
+                stdout_ref="",
+                stderr_ref=redact_secrets(str(err)),
+                timed_out=False,
+            )
 
 
 Sandbox = LocalSandbox
