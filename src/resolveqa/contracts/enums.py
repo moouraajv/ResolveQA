@@ -1,4 +1,4 @@
-"""Enumerations defined in RFC-0001 §3."""
+"""Enumerations defined in RFC-0001 §3 and §4."""
 
 from enum import Enum
 

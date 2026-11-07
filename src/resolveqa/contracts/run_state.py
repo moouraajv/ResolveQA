@@ -6,9 +6,10 @@ import json
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
-from .enums import CaseState, ChannelType, TERMINAL_STATES
+from .enums import CaseState, ChannelType
 from .errors import ContractValidationError
 from .validators import (
+    decode_json_dict,
     parse_enum,
     require_int,
     require_non_empty_str,
@@ -84,14 +85,10 @@ class RunState:
         object.__setattr__(self, "terminal_reason", validated_reason)
 
         object.__setattr__(
-            self,
-            "base_revision",
-            require_optional_non_empty_str(self.base_revision, "base_revision"),
+            self, "base_revision", require_optional_non_empty_str(self.base_revision, "base_revision")
         )
         object.__setattr__(
-            self,
-            "fix_revision",
-            require_optional_non_empty_str(self.fix_revision, "fix_revision"),
+            self, "fix_revision", require_optional_non_empty_str(self.fix_revision, "fix_revision")
         )
 
         if isinstance(self.attempts, dict):
@@ -105,12 +102,6 @@ class RunState:
             self, "evidence_ids", require_tuple_of_strings(self.evidence_ids, "evidence_ids")
         )
 
-        self.validate()
-
-    def validate(self) -> None:
-        """Validate RunState invariants."""
-        pass
-
     def transition_to(
         self,
         new_state: CaseState | str,
@@ -119,7 +110,6 @@ class RunState:
     ) -> RunState:
         """Return a brand new RunState instance in the new state without mutating self."""
         parsed_new_state = parse_enum(CaseState, new_state, "state")
-        reason_to_use = terminal_reason if terminal_reason is not None else self.terminal_reason
         return RunState(
             case_id=self.case_id,
             client_id=self.client_id,
@@ -129,7 +119,7 @@ class RunState:
             state=parsed_new_state,
             created_at=self.created_at,
             updated_at=updated_at,
-            terminal_reason=reason_to_use,
+            terminal_reason=terminal_reason,
             attempts=self.attempts,
             base_revision=self.base_revision,
             fix_revision=self.fix_revision,
@@ -200,8 +190,5 @@ class RunState:
 
     @classmethod
     def from_json(cls, json_str: str) -> RunState:
-        try:
-            parsed = json.loads(json_str)
-        except Exception as err:
-            raise ContractValidationError(f"Invalid JSON string: {err}") from err
-        return cls.from_dict(parsed)
+        data = decode_json_dict(json_str)
+        return cls.from_dict(data)

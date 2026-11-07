@@ -12,24 +12,33 @@ from resolveqa.contracts import (
     CustomerMessage,
     DeliveryKind,
     DeliveryResult,
+    DeliveryStage,
     Event,
     EventSource,
     EventType,
     Evidence,
     EvidenceKind,
     ExecResult,
+    FixStage,
+    IntakeStage,
     LLMResult,
+    LLMStage,
     NeedsInfo,
     Patch,
     ReplayRef,
+    ReplyStage,
     ReportInput,
     ReproOutcome,
+    ReproductionStage,
     ReproResult,
     RunState,
+    SandboxStage,
     TestRun as ContractTestRun,
     TriageRecord,
+    TriageStage,
     Verdict,
     VerdictResult,
+    VerificationStage,
 )
 
 
@@ -86,7 +95,6 @@ class TestImmutabilityAndFrozenContract(unittest.TestCase):
         self.assertIsInstance(verdict.reasons, tuple)
         with self.assertRaises((FrozenInstanceError, AttributeError)):
             verdict.result = VerdictResult.REJECTED  # type: ignore
-
 
 
 class TestRunStateContract(unittest.TestCase):
@@ -159,14 +167,12 @@ class TestRunStateContract(unittest.TestCase):
 
     def test_run_state_timestamps_require_utc_iso8601(self) -> None:
         """Timestamps created_at/updated_at require UTC ISO 8601 (with Z or +00:00)."""
-        # Valid with +00:00 offset
         p_offset = dict(self.valid_payload)
         p_offset["created_at"] = "2026-11-07T12:00:00+00:00"
         p_offset["updated_at"] = "2026-11-07T12:05:00+00:00"
         rs = RunState.from_dict(p_offset)
         self.assertEqual(rs.created_at, "2026-11-07T12:00:00+00:00")
 
-        # Invalid timestamps: naive, non-UTC offset, invalid strings, non-string
         invalid_timestamps = [
             "2026-11-07T12:00:00",  # naive, no tz
             "2026-11-07T12:00:00+03:00",  # non-UTC tz
@@ -312,14 +318,14 @@ class TestRunStateContract(unittest.TestCase):
         with self.assertRaises(ContractValidationError):
             run_state.transition_to(CaseState.BLOCKED, updated_at="2026-11-07T12:02:00Z")
 
-        # Transition to blocked with terminal_reason must succeed
+        # Transition to blocked with valid terminal_reason succeeds
         s3 = run_state.transition_to(
             CaseState.BLOCKED,
             updated_at="2026-11-07T12:02:00Z",
-            terminal_reason="not_reproduced",
+            terminal_reason="not_reproduced: assertion did not trigger",
         )
         self.assertEqual(s3.state, CaseState.BLOCKED)
-        self.assertEqual(s3.terminal_reason, "not_reproduced")
+        self.assertEqual(s3.terminal_reason, "not_reproduced: assertion did not trigger")
 
     def test_json_serialization_roundtrip(self) -> None:
         original = RunState.from_dict(self.valid_payload)
@@ -332,6 +338,14 @@ class TestRunStateContract(unittest.TestCase):
         self.assertEqual(restored.client_id, original.client_id)
         self.assertEqual(restored.state, original.state)
         self.assertEqual(restored.attempts.to_dict(), original.attempts.to_dict())
+
+        # Invalid JSON translation
+        with self.assertRaises(ContractValidationError):
+            RunState.from_json("not valid json")
+        with self.assertRaises(ContractValidationError):
+            RunState.from_json("[1, 2, 3]")
+        with self.assertRaises(ContractValidationError):
+            RunState.from_json("12345")
 
 
 class TestEventContract(unittest.TestCase):
@@ -580,7 +594,6 @@ class TestEvidenceContract(unittest.TestCase):
     """Test suite for Evidence model and serialization (RFC-0001 §3.4)."""
 
     def setUp(self) -> None:
-        # Note: path is relative to runs/<case_id>/ per RFC-0001 §3.4
         self.valid_evidence_payload = {
             "evidence_id": "ev-001",
             "case_id": "case-123",
@@ -660,13 +673,11 @@ class TestEvidenceContract(unittest.TestCase):
 
     def test_evidence_created_at_requires_utc_iso8601(self) -> None:
         """Evidence.created_at requires valid UTC ISO 8601 timestamp."""
-        # Valid with +00:00
         p = dict(self.valid_evidence_payload)
         p["created_at"] = "2026-11-07T12:05:00+00:00"
         ev = Evidence.from_dict(p)
         self.assertEqual(ev.created_at, "2026-11-07T12:05:00+00:00")
 
-        # Invalid
         for bad_ts in ["2026-11-07T12:05:00", "2026-11-07T12:05:00+04:00", "bad_date", None]:
             with self.subTest(ts=bad_ts):
                 p_bad = dict(self.valid_evidence_payload)
@@ -711,7 +722,7 @@ class TestEvidenceContract(unittest.TestCase):
 
 
 class TestStageContracts(unittest.TestCase):
-    """Test all stage input/output models from RFC-0001 §3.3."""
+    """Test all stage input/output models and protocols (RFC-0001 §3.3)."""
 
     def test_report_input_valid_and_invalid_channel(self) -> None:
         """Finding 1: ReportInput.channel rejects invalid enums."""
@@ -878,7 +889,7 @@ class TestStageContracts(unittest.TestCase):
                     result=VerdictResult.VERIFIED,
                 )
 
-        # 7. Non-verified verdicts allow exit codes != 0 and are not constrained by verified rules
+        # 7. Non-verified verdicts allow exit codes != 0 and rejected requires explanatory reasons
         rejected = Verdict(
             before=ContractTestRun(command="pytest", exit_code=0, duration_s=1.0, log_ref="l"),
             after=ContractTestRun(command="pytest", exit_code=1, duration_s=1.0, log_ref="l"),
@@ -886,8 +897,73 @@ class TestStageContracts(unittest.TestCase):
             base_revision="rev-before",
             fix_revision="rev-after",
             result=VerdictResult.REJECTED,
+            reasons=("reproduction still failed after fix",),
         )
         self.assertEqual(rejected.result, VerdictResult.REJECTED)
+
+    def test_verdict_reasons_and_rejected_strictness(self) -> None:
+        """Requirement 5: reasons non-empty strings, rejected requires reason and both revisions."""
+        valid_before = ContractTestRun("pytest repro.py", 1, 1.2, "log1")
+        valid_after = ContractTestRun("pytest repro.py", 0, 1.1, "log2")
+        valid_suite = ContractTestRun("pytest", 0, 5.4, "log3")
+
+        # 1. reasons cannot contain empty items
+        with self.assertRaises(ContractValidationError):
+            Verdict(
+                before=valid_before,
+                after=valid_after,
+                suite=valid_suite,
+                base_revision="b1",
+                fix_revision="f1",
+                result=VerdictResult.VERIFIED,
+                reasons=("valid", ""),
+            )
+
+        # 2. rejected requires reasons to have at least one item
+        with self.assertRaises(ContractValidationError):
+            Verdict(
+                before=valid_before,
+                after=ContractTestRun("pytest repro.py", 1, 1.0, "l"),
+                suite=valid_suite,
+                base_revision="b1",
+                fix_revision="f1",
+                result=VerdictResult.REJECTED,
+                reasons=(),
+            )
+
+        # 3. rejected requires both base_revision and fix_revision non-empty
+        with self.assertRaises(ContractValidationError):
+            Verdict(
+                before=valid_before,
+                after=ContractTestRun("pytest repro.py", 1, 1.0, "l"),
+                suite=valid_suite,
+                base_revision="",
+                fix_revision="f1",
+                result=VerdictResult.REJECTED,
+                reasons=("patch introduced regression",),
+            )
+        with self.assertRaises(ContractValidationError):
+            Verdict(
+                before=valid_before,
+                after=ContractTestRun("pytest repro.py", 1, 1.0, "l"),
+                suite=valid_suite,
+                base_revision="b1",
+                fix_revision="   ",
+                result=VerdictResult.REJECTED,
+                reasons=("patch introduced regression",),
+            )
+
+        # 4. Valid rejected verdict
+        v_rej = Verdict(
+            before=valid_before,
+            after=ContractTestRun("pytest repro.py", 1, 1.0, "l"),
+            suite=valid_suite,
+            base_revision="b1",
+            fix_revision="f1",
+            result=VerdictResult.REJECTED,
+            reasons=("patch did not resolve assertion",),
+        )
+        self.assertEqual(v_rej.result, VerdictResult.REJECTED)
 
     def test_delivery_result_and_invalid_kind(self) -> None:
         """Finding 1: DeliveryResult rejects invalid kind enums."""
@@ -963,6 +1039,96 @@ class TestStageContracts(unittest.TestCase):
                         "model": "mock-v1",
                         "mock": invalid_val,
                     })
+
+    def test_stage_models_roundtrip(self) -> None:
+        """Requirement 7: Roundtrip tests for DeliveryResult, CustomerMessage and others."""
+        # DeliveryResult
+        dr = DeliveryResult(
+            kind=DeliveryKind.LOCAL_PACKAGE,
+            url_or_path="runs/case-123/delivery/",
+            label="PR não publicado",
+            evidence_refs=("ev-1", "ev-2"),
+        )
+        dr_json = dr.to_json()
+        dr_restored = DeliveryResult.from_json(dr_json)
+        self.assertEqual(dr.to_dict(), dr_restored.to_dict())
+
+        # CustomerMessage
+        cm = CustomerMessage(
+            channel=ChannelType.SIMULATED_CHAT,
+            text="O cupom foi aplicado com sucesso.",
+            sent_after_event_seq=15,
+        )
+        cm_json = cm.to_json()
+        cm_restored = CustomerMessage.from_json(cm_json)
+        self.assertEqual(cm.to_dict(), cm_restored.to_dict())
+
+        # Test from_json error translation for stage models
+        for model_cls in [ReportInput, TriageRecord, NeedsInfo, ReproResult, Patch, ContractTestRun, Verdict, DeliveryResult, CustomerMessage, ExecResult, LLMResult]:
+            with self.subTest(cls=model_cls.__name__):
+                with self.assertRaises(ContractValidationError):
+                    model_cls.from_json("invalid json syntax")
+                with self.assertRaises(ContractValidationError):
+                    model_cls.from_json("[1, 2, 3]")
+
+    def test_protocols_structural_verification(self) -> None:
+        """Requirement 7: Protocols structural verification with minimal implementations."""
+
+        class MinimalIntake:
+            def create(self, report: ReportInput) -> RunState:
+                return RunState(
+                    case_id="c-1",
+                    client_id=report.client_id,
+                    repo_ref=report.repo_ref,
+                    channel=report.channel,
+                    report_text=report.report_text,
+                    state=CaseState.CREATED,
+                    created_at="2026-11-07T12:00:00Z",
+                    updated_at="2026-11-07T12:00:00Z",
+                )
+
+        class MinimalTriage:
+            def run(self, case: RunState) -> TriageRecord | NeedsInfo:
+                return TriageRecord(input="in", expected="exp", observed="obs")
+
+        class MinimalReproduction:
+            def run(self, case: RunState, triage: TriageRecord) -> ReproResult:
+                return ReproResult("test.py", "ref1", 1, ReproOutcome.RED_ON_ASSERTION)
+
+        class MinimalFix:
+            def run(self, case: RunState, triage: TriageRecord, repro: ReproResult) -> Patch:
+                return Patch("diff1", ("app.py",))
+
+        class MinimalVerification:
+            def run(self, case: RunState, repro: ReproResult, patch: Patch) -> Verdict:
+                tr = ContractTestRun("cmd", 0, 1.0, "log")
+                return Verdict(tr, tr, tr, "b", "f", VerdictResult.ENV_ERROR)
+
+        class MinimalDelivery:
+            def build(self, case: RunState, verdict: Verdict) -> DeliveryResult:
+                return DeliveryResult(DeliveryKind.LOCAL_PACKAGE, "pkg/path")
+
+        class MinimalReply:
+            def compose(self, case: RunState, outcome: Any) -> CustomerMessage:
+                return CustomerMessage(ChannelType.API, "msg", 1)
+
+        class MinimalSandbox:
+            def exec(self, workdir_ref: str, command: str, timeout_s: float) -> ExecResult:
+                return ExecResult(0, "out", "err")
+
+        class MinimalLLM:
+            def complete(self, purpose: str, messages: list[dict[str, str]], schema: Any = None) -> LLMResult:
+                return LLMResult("content", 1, 1, "mock", "v1")
+
+        self.assertIsInstance(MinimalIntake(), IntakeStage)
+        self.assertIsInstance(MinimalTriage(), TriageStage)
+        self.assertIsInstance(MinimalReproduction(), ReproductionStage)
+        self.assertIsInstance(MinimalFix(), FixStage)
+        self.assertIsInstance(MinimalVerification(), VerificationStage)
+        self.assertIsInstance(MinimalDelivery(), DeliveryStage)
+        self.assertIsInstance(MinimalReply(), ReplyStage)
+        self.assertIsInstance(MinimalSandbox(), SandboxStage)
+        self.assertIsInstance(MinimalLLM(), LLMStage)
 
 
 if __name__ == "__main__":

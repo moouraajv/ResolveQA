@@ -9,6 +9,7 @@ from typing import Any, Optional
 from .enums import EvidenceKind
 from .errors import ContractValidationError
 from .validators import (
+    decode_json_dict,
     parse_enum,
     require_bool,
     require_non_empty_str,
@@ -93,8 +94,5 @@ class Evidence:
 
     @classmethod
     def from_json(cls, json_str: str) -> Evidence:
-        try:
-            parsed = json.loads(json_str)
-        except Exception as err:
-            raise ContractValidationError(f"Invalid JSON string: {err}") from err
-        return cls.from_dict(parsed)
+        data = decode_json_dict(json_str)
+        return cls.from_dict(data)

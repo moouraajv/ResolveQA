@@ -9,6 +9,7 @@ from typing import Any, Optional
 from .enums import CaseState, EventSource, EventType
 from .errors import ContractValidationError
 from .validators import (
+    decode_json_dict,
     parse_enum,
     parse_optional_enum,
     require_int,
@@ -56,6 +57,11 @@ class ReplayRef:
             original_ts=data["original_ts"],
         )
 
+    @classmethod
+    def from_json(cls, json_str: str) -> ReplayRef:
+        data = decode_json_dict(json_str)
+        return cls.from_dict(data)
+
 
 @dataclass(frozen=True)
 class Event:
@@ -77,14 +83,15 @@ class Event:
         object.__setattr__(self, "case_id", require_non_empty_str(self.case_id, "case_id"))
         object.__setattr__(self, "seq", require_int(self.seq, "seq", min_value=0))
         object.__setattr__(self, "ts", require_utc_iso8601_timestamp(self.ts, "ts"))
-        object.__setattr__(self, "source", parse_enum(EventSource, self.source, "source"))
-        object.__setattr__(self, "type", parse_enum(EventType, self.type, "type"))
-        object.__setattr__(
-            self, "from_state", parse_optional_enum(CaseState, self.from_state, "from_state")
-        )
-        object.__setattr__(
-            self, "to_state", parse_optional_enum(CaseState, self.to_state, "to_state")
-        )
+        parsed_source = parse_enum(EventSource, self.source, "source")
+        parsed_type = parse_enum(EventType, self.type, "type")
+        object.__setattr__(self, "source", parsed_source)
+        object.__setattr__(self, "type", parsed_type)
+
+        parsed_from = parse_optional_enum(CaseState, self.from_state, "from_state")
+        parsed_to = parse_optional_enum(CaseState, self.to_state, "to_state")
+        object.__setattr__(self, "from_state", parsed_from)
+        object.__setattr__(self, "to_state", parsed_to)
         object.__setattr__(self, "reason", require_optional_non_empty_str(self.reason, "reason"))
 
         if isinstance(self.replay_of, dict):
@@ -177,8 +184,5 @@ class Event:
 
     @classmethod
     def from_json(cls, json_str: str) -> Event:
-        try:
-            parsed = json.loads(json_str)
-        except Exception as err:
-            raise ContractValidationError(f"Invalid JSON string: {err}") from err
-        return cls.from_dict(parsed)
+        data = decode_json_dict(json_str)
+        return cls.from_dict(data)

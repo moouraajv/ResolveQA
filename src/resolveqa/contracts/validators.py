@@ -2,6 +2,7 @@
 
 from datetime import datetime, timezone
 from enum import Enum
+import json
 import posixpath
 import re
 from typing import Any, Optional, TypeVar
@@ -119,6 +120,7 @@ def require_posix_relative_path(value: Any, field_name: str) -> str:
         raise ContractValidationError(
             f"Field '{field_name}' must be a relative path, not absolute: {value!r}."
         )
+    # Check for any parent traversal segments
     raw_segments = value.split("/")
     if any(segment == ".." for segment in raw_segments):
         raise ContractValidationError(
@@ -145,15 +147,6 @@ def require_sha256_hex(value: Any, field_name: str) -> str:
             f"Field '{field_name}' must be exactly 64 lowercase hexadecimal characters, got {value!r}."
         )
     return value
-
-
-def require_tuple_of_strings(items: Any, field_name: str) -> tuple[str, ...]:
-    """Validate and convert a sequence into an immutable tuple of non-empty strings."""
-    if not isinstance(items, (list, tuple)):
-        raise ContractValidationError(
-            f"Field '{field_name}' must be a sequence of strings, got {type(items).__name__}."
-        )
-    return tuple(require_non_empty_str(item, f"{field_name}[{i}]") for i, item in enumerate(items))
 
 
 def validate_terminal_reason(state: CaseState, terminal_reason: Optional[str]) -> Optional[str]:
@@ -207,3 +200,27 @@ def validate_terminal_reason(state: CaseState, terminal_reason: Optional[str]) -
     return terminal_reason
 
 
+def require_tuple_of_strings(items: Any, field_name: str) -> tuple[str, ...]:
+    """Validate and convert a sequence into an immutable tuple of non-empty strings."""
+    if not isinstance(items, (list, tuple)):
+        raise ContractValidationError(
+            f"Field '{field_name}' must be a sequence of strings, got {type(items).__name__}."
+        )
+    return tuple(require_non_empty_str(item, f"{field_name}[{i}]") for i, item in enumerate(items))
+
+
+def decode_json_dict(json_str: Any) -> dict[str, Any]:
+    """Safely decode JSON string to a dictionary or raise ContractValidationError."""
+    if not isinstance(json_str, str):
+        raise ContractValidationError(
+            f"Expected JSON string, got {type(json_str).__name__}."
+        )
+    try:
+        data = json.loads(json_str)
+    except Exception as err:
+        raise ContractValidationError(f"Invalid JSON string: {err}") from err
+    if not isinstance(data, dict):
+        raise ContractValidationError(
+            f"Parsed JSON must be an object/dict, got {type(data).__name__}."
+        )
+    return data

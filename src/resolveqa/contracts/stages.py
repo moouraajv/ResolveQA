@@ -10,6 +10,7 @@ from .enums import ChannelType, DeliveryKind, ReproOutcome, VerdictResult
 from .errors import ContractValidationError
 from .run_state import RunState
 from .validators import (
+    decode_json_dict,
     parse_enum,
     require_bool,
     require_int,
@@ -64,7 +65,8 @@ class ReportInput:
 
     @classmethod
     def from_json(cls, json_str: str) -> ReportInput:
-        return cls.from_dict(json.loads(json_str))
+        data = decode_json_dict(json_str)
+        return cls.from_dict(data)
 
 
 @dataclass(frozen=True)
@@ -125,7 +127,8 @@ class TriageRecord:
 
     @classmethod
     def from_json(cls, json_str: str) -> TriageRecord:
-        return cls.from_dict(json.loads(json_str))
+        data = decode_json_dict(json_str)
+        return cls.from_dict(data)
 
 
 @dataclass(frozen=True)
@@ -168,7 +171,8 @@ class NeedsInfo:
 
     @classmethod
     def from_json(cls, json_str: str) -> NeedsInfo:
-        return cls.from_dict(json.loads(json_str))
+        data = decode_json_dict(json_str)
+        return cls.from_dict(data)
 
 
 @dataclass(frozen=True)
@@ -233,7 +237,8 @@ class ReproResult:
 
     @classmethod
     def from_json(cls, json_str: str) -> ReproResult:
-        return cls.from_dict(json.loads(json_str))
+        data = decode_json_dict(json_str)
+        return cls.from_dict(data)
 
 
 @dataclass(frozen=True)
@@ -280,7 +285,8 @@ class Patch:
 
     @classmethod
     def from_json(cls, json_str: str) -> Patch:
-        return cls.from_dict(json.loads(json_str))
+        data = decode_json_dict(json_str)
+        return cls.from_dict(data)
 
 
 @dataclass(frozen=True)
@@ -338,7 +344,8 @@ class TestRun:
 
     @classmethod
     def from_json(cls, json_str: str) -> TestRun:
-        return cls.from_dict(json.loads(json_str))
+        data = decode_json_dict(json_str)
+        return cls.from_dict(data)
 
 
 @dataclass(frozen=True)
@@ -374,13 +381,14 @@ class Verdict:
                 f"'suite' must be TestRun or dict, got {type(self.suite).__name__}."
             )
 
-        object.__setattr__(self, "result", parse_enum(VerdictResult, self.result, "result"))
+        parsed_result = parse_enum(VerdictResult, self.result, "result")
+        object.__setattr__(self, "result", parsed_result)
         object.__setattr__(self, "reasons", require_tuple_of_strings(self.reasons, "reasons"))
 
         self.validate()
 
     def validate(self) -> None:
-        """Validate Verdict invariants per RFC-0001 §3.3."""
+        """Validate Verdict invariants per RFC-0001 §3.3 and review rules."""
         if self.result == VerdictResult.VERIFIED:
             if self.before.exit_code == 0:
                 raise ContractValidationError(
@@ -393,6 +401,14 @@ class Verdict:
             if self.suite.exit_code != 0:
                 raise ContractValidationError(
                     f"Verified verdict requires suite.exit_code == 0, got {self.suite.exit_code}."
+                )
+            require_non_empty_str(self.base_revision, "base_revision")
+            require_non_empty_str(self.fix_revision, "fix_revision")
+        elif self.result == VerdictResult.REJECTED:
+            # Rejected verdict requires at least one reason and two registered revisions
+            if len(self.reasons) == 0:
+                raise ContractValidationError(
+                    "Rejected verdict requires at least one explanatory reason in 'reasons'."
                 )
             require_non_empty_str(self.base_revision, "base_revision")
             require_non_empty_str(self.fix_revision, "fix_revision")
@@ -443,7 +459,8 @@ class Verdict:
 
     @classmethod
     def from_json(cls, json_str: str) -> Verdict:
-        return cls.from_dict(json.loads(json_str))
+        data = decode_json_dict(json_str)
+        return cls.from_dict(data)
 
 
 @dataclass(frozen=True)
@@ -492,7 +509,8 @@ class DeliveryResult:
 
     @classmethod
     def from_json(cls, json_str: str) -> DeliveryResult:
-        return cls.from_dict(json.loads(json_str))
+        data = decode_json_dict(json_str)
+        return cls.from_dict(data)
 
 
 @dataclass(frozen=True)
@@ -540,7 +558,8 @@ class CustomerMessage:
 
     @classmethod
     def from_json(cls, json_str: str) -> CustomerMessage:
-        return cls.from_dict(json.loads(json_str))
+        data = decode_json_dict(json_str)
+        return cls.from_dict(data)
 
 
 @dataclass(frozen=True)
@@ -591,7 +610,8 @@ class ExecResult:
 
     @classmethod
     def from_json(cls, json_str: str) -> ExecResult:
-        return cls.from_dict(json.loads(json_str))
+        data = decode_json_dict(json_str)
+        return cls.from_dict(data)
 
 
 @dataclass(frozen=True)
@@ -651,7 +671,8 @@ class LLMResult:
 
     @classmethod
     def from_json(cls, json_str: str) -> LLMResult:
-        return cls.from_dict(json.loads(json_str))
+        data = decode_json_dict(json_str)
+        return cls.from_dict(data)
 
 
 # Stage Component Protocols (RFC-0001 §3.3)
