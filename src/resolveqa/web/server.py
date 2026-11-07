@@ -205,11 +205,14 @@ class IntakeRequestHandler(BaseHTTPRequestHandler):
             return
 
         try:
+            # Pass raw JSON values through to ReportInput so type/emptiness
+            # invariants stay in contracts (no str() coercion that turns null/123
+            # into the strings "None"/"123").
             report = ReportInput(
                 client_id=client_id,
-                repo_ref=str(payload.get("repo_ref", "")),
+                repo_ref=payload.get("repo_ref"),
                 channel=ChannelType.API,
-                report_text=str(payload.get("report_text", "")),
+                report_text=payload.get("report_text"),
             )
             case = self.intake.create(report)
         except ContractValidationError as err:
