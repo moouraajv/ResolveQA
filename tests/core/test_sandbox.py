@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import errno
+from dataclasses import FrozenInstanceError
 import hashlib
 import json
 import os
@@ -126,8 +127,13 @@ class TestLocalSandbox(unittest.TestCase):
             timeout_s=10.0,
         )
         self.assertEqual(res.exit_code, 0)
-        self.assertTrue(getattr(res, "truncated", False))
+        self.assertFalse(hasattr(res, "truncated"))
+        with self.assertRaises(FrozenInstanceError):
+            res.exit_code = 1
         self.assertTrue(sandbox.last_output_truncated)
+        clean_result = sandbox.exec("demo-target", 'python3 -c "print(1)"', timeout_s=10.0)
+        self.assertEqual(clean_result.exit_code, 0)
+        self.assertFalse(sandbox.last_output_truncated)
         self.assertIn("...[truncated: output exceeded max_output_bytes]", res.stdout_ref)
         self.assertLess(len(res.stdout_ref), 400)
 
