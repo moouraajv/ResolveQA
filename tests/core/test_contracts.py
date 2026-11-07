@@ -7,6 +7,7 @@ import unittest
 from resolveqa.contracts import (
     Attempts,
     BlockedReason,
+    BlockedTerminalReason,
     CaseState,
     ChannelType,
     ContractValidationError,
@@ -21,10 +22,12 @@ from resolveqa.contracts import (
     EvidenceKind,
     ExecResult,
     FixStage,
+    InfraErrorTerminalReason,
     IntakeStage,
     LLMResult,
     LLMStage,
     NeedsInfo,
+    NeedsInfoTerminalReason,
     Patch,
     ReplayRef,
     ReplyStage,
@@ -35,6 +38,7 @@ from resolveqa.contracts import (
     RunState,
     SandboxStage,
     TestRun as ContractTestRun,
+    TerminalReason,
     TriageRecord,
     TriageStage,
     Verdict,
@@ -222,72 +226,125 @@ class TestRunStateContract(unittest.TestCase):
         self.assertIsNone(rs_ver.terminal_reason)
 
         p_ver_bad = dict(p_ver)
-        p_ver_bad["terminal_reason"] = "verified with success"
+        p_ver_bad["terminal_reason"] = {"code": "limit_exceeded"}
         with self.assertRaises(ContractValidationError):
             RunState.from_dict(p_ver_bad)
+
+        p_ver_str = dict(p_ver)
+        p_ver_str["terminal_reason"] = "verified with success"
+        with self.assertRaises(ContractValidationError):
+            RunState.from_dict(p_ver_str)
 
         # 2. non-terminal state MUST NOT have terminal_reason
         p_created = dict(self.valid_payload)
         p_created["state"] = CaseState.CREATED.value
-        p_created["terminal_reason"] = "reason"
+        p_created["terminal_reason"] = {"code": "limit_exceeded"}
         with self.assertRaises(ContractValidationError):
             RunState.from_dict(p_created)
 
-        # 3. needs_info state requires non-empty question
+        # 3. needs_info state requires NeedsInfoTerminalReason (question_to_support)
         p_ni = dict(self.valid_payload)
         p_ni["state"] = CaseState.NEEDS_INFO.value
-        p_ni["terminal_reason"] = "Qual o codigo do cupom?"
+        p_ni["terminal_reason"] = {"question_to_support": "Qual o codigo do cupom?"}
         rs_ni = RunState.from_dict(p_ni)
-        self.assertEqual(rs_ni.terminal_reason, "Qual o codigo do cupom?")
+        self.assertIsInstance(rs_ni.terminal_reason, NeedsInfoTerminalReason)
+        self.assertEqual(rs_ni.terminal_reason.question_to_support, "Qual o codigo do cupom?")
+        # JSON roundtrip
+        ni_json = rs_ni.to_json()
+        rs_ni_recovered = RunState.from_json(ni_json)
+        self.assertEqual(rs_ni, rs_ni_recovered)
+
+        # String is strictly rejected
+        p_ni_str = dict(p_ni)
+        p_ni_str["terminal_reason"] = "Qual o codigo do cupom?"
+        with self.assertRaises(ContractValidationError):
+            RunState.from_dict(p_ni_str)
+
+        # Needs_info rejects other reason structures or extra fields
+        p_ni_wrong = dict(p_ni)
+        p_ni_wrong["terminal_reason"] = {"code": "limit_exceeded"}
+        with self.assertRaises(ContractValidationError):
+            RunState.from_dict(p_ni_wrong)
+
+        p_ni_extra = dict(p_ni)
+        p_ni_extra["terminal_reason"] = {"question_to_support": "Q?", "detail": "extra"}
+        with self.assertRaises(ContractValidationError):
+            RunState.from_dict(p_ni_extra)
 
         p_ni["terminal_reason"] = None
         with self.assertRaises(ContractValidationError):
             RunState.from_dict(p_ni)
-        p_ni["terminal_reason"] = "   "
-        with self.assertRaises(ContractValidationError):
-            RunState.from_dict(p_ni)
 
-        # 4. infra_error requires non-empty detail
+        # 4. infra_error requires InfraErrorTerminalReason (detail)
         p_ie = dict(self.valid_payload)
         p_ie["state"] = CaseState.INFRA_ERROR.value
-        p_ie["terminal_reason"] = "Sandbox container timed out after 600s"
+        p_ie["terminal_reason"] = {"detail": "Sandbox container timed out after 600s"}
         rs_ie = RunState.from_dict(p_ie)
-        self.assertEqual(rs_ie.terminal_reason, "Sandbox container timed out after 600s")
+        self.assertIsInstance(rs_ie.terminal_reason, InfraErrorTerminalReason)
+        self.assertEqual(rs_ie.terminal_reason.detail, "Sandbox container timed out after 600s")
+        # JSON roundtrip
+        ie_json = rs_ie.to_json()
+        rs_ie_recovered = RunState.from_json(ie_json)
+        self.assertEqual(rs_ie, rs_ie_recovered)
+
+        # String is rejected
+        p_ie_str = dict(p_ie)
+        p_ie_str["terminal_reason"] = "Sandbox container timed out"
+        with self.assertRaises(ContractValidationError):
+            RunState.from_dict(p_ie_str)
+
+        # Extra fields or wrong reason rejected
+        p_ie_extra = dict(p_ie)
+        p_ie_extra["terminal_reason"] = {"detail": "err", "question_to_support": "extra"}
+        with self.assertRaises(ContractValidationError):
+            RunState.from_dict(p_ie_extra)
 
         p_ie["terminal_reason"] = None
         with self.assertRaises(ContractValidationError):
             RunState.from_dict(p_ie)
 
-        # 5. blocked requires enum (limit_exceeded, not_reproduced, patch_rejected) + optional detail
+        # 5. blocked requires BlockedTerminalReason (code enum + optional detail)
         p_blk = dict(self.valid_payload)
         p_blk["state"] = CaseState.BLOCKED.value
 
-        valid_blocked_reasons = [
-            "limit_exceeded",
-            "not_reproduced",
-            "patch_rejected",
-            "limit_exceeded: max fix attempts reached",
-            "not_reproduced: assertion did not fail on test",
-            "patch_rejected: touched test files in fix",
+        valid_blocked_payloads = [
+            {"code": "limit_exceeded"},
+            {"code": "not_reproduced"},
+            {"code": "patch_rejected"},
+            {"code": "limit_exceeded", "detail": "max fix attempts reached"},
+            {"code": "not_reproduced", "detail": "assertion did not fail on test"},
+            {"code": "patch_rejected", "detail": "touched test files in fix"},
         ]
-        for br in valid_blocked_reasons:
-            with self.subTest(reason=br):
-                p_blk["terminal_reason"] = br
+        for b_dict in valid_blocked_payloads:
+            with self.subTest(reason=b_dict):
+                p_blk["terminal_reason"] = b_dict
                 rs_b = RunState.from_dict(p_blk)
-                self.assertEqual(rs_b.terminal_reason, br)
+                self.assertIsInstance(rs_b.terminal_reason, BlockedTerminalReason)
+                self.assertEqual(rs_b.terminal_reason.code.value, b_dict["code"])
+                self.assertEqual(rs_b.terminal_reason.detail, b_dict.get("detail"))
+                # JSON roundtrip
+                rs_b_recovered = RunState.from_json(rs_b.to_json())
+                self.assertEqual(rs_b, rs_b_recovered)
 
-        invalid_blocked_reasons = [
+        # Rejection of strings (including limit_exceeded string)
+        for bad_str in ["limit_exceeded", "not_reproduced", "patch_rejected", "limit_exceeded: max"]:
+            with self.subTest(bad_str=bad_str):
+                p_blk["terminal_reason"] = bad_str
+                with self.assertRaises(ContractValidationError):
+                    RunState.from_dict(p_blk)
+
+        # Rejection of wrong fields, invalid codes, empty detail
+        invalid_blocked_payloads = [
             None,
-            "",
-            "   ",
-            "unknown_reason",
-            "invalid_code: detail",
-            "limit_exceeded:",  # empty detail after colon
-            "not_reproduced:   ",
+            {},
+            {"code": "unknown_reason"},
+            {"code": "limit_exceeded", "detail": ""},
+            {"code": "limit_exceeded", "detail": "   "},
+            {"code": "limit_exceeded", "question_to_support": "extra"},
         ]
-        for bad_br in invalid_blocked_reasons:
-            with self.subTest(bad_reason=bad_br):
-                p_blk["terminal_reason"] = bad_br
+        for bad_payload in invalid_blocked_payloads:
+            with self.subTest(bad_payload=bad_payload):
+                p_blk["terminal_reason"] = bad_payload
                 with self.assertRaises(ContractValidationError):
                     RunState.from_dict(p_blk)
 
@@ -320,13 +377,14 @@ class TestRunStateContract(unittest.TestCase):
             run_state.transition_to(CaseState.BLOCKED, updated_at="2026-11-07T12:02:00Z")
 
         # Transition to blocked with valid terminal_reason succeeds
+        reason = BlockedTerminalReason(BlockedReason.NOT_REPRODUCED, "assertion did not trigger")
         s3 = run_state.transition_to(
             CaseState.BLOCKED,
             updated_at="2026-11-07T12:02:00Z",
-            terminal_reason="not_reproduced: assertion did not trigger",
+            terminal_reason=reason,
         )
         self.assertEqual(s3.state, CaseState.BLOCKED)
-        self.assertEqual(s3.terminal_reason, "not_reproduced: assertion did not trigger")
+        self.assertEqual(s3.terminal_reason, reason)
 
     def test_json_serialization_roundtrip(self) -> None:
         original = RunState.from_dict(self.valid_payload)
@@ -624,8 +682,26 @@ class TestEvidenceContract(unittest.TestCase):
         ev = Evidence.from_dict(p)
         self.assertEqual(ev.path, "evidence/sub/ev-001.patch")
 
-        # 2. Rejections
+        # Legitimate prefix ..hidden (not a .. directory traversal segment)
+        p_hid = dict(self.valid_evidence_payload)
+        p_hid["path"] = "..hidden"
+        ev_hid = Evidence.from_dict(p_hid)
+        self.assertEqual(ev_hid.path, "..hidden")
+
+        p_hid_sub = dict(self.valid_evidence_payload)
+        p_hid_sub["path"] = "..hidden/ev-001.patch"
+        ev_hid_sub = Evidence.from_dict(p_hid_sub)
+        self.assertEqual(ev_hid_sub.path, "..hidden/ev-001.patch")
+
+        # 2. Rejections (including exact user examples)
         invalid_paths = [
+            "/etc/passwd",  # absolute
+            "../x",  # parent traversal
+            "a/../../x",  # parent traversal
+            "C:\\x",  # drive letter + backslash
+            "",  # empty
+            "./C:/x",  # drive letter after normalization
+            "evidence/\0bad",  # null byte
             "/runs/case-123/evidence/ev.patch",  # absolute
             "/evidence/ev.patch",  # absolute
             "evidence/../ev.patch",  # parent traversal ..
@@ -635,7 +711,6 @@ class TestEvidenceContract(unittest.TestCase):
             "evidence\\ev.patch",  # backslash
             "C:evidence/ev.patch",  # drive letter
             "d:/evidence/ev.patch",  # drive letter
-            "",  # empty
             "   ",  # whitespace
             ".",  # dot
             "./",  # dot-slash
@@ -656,8 +731,9 @@ class TestEvidenceContract(unittest.TestCase):
         ev = Evidence.from_dict(p)
         self.assertEqual(ev.sha256, valid_sha)
 
-        # 2. Rejections: uppercase hex, length != 64, non-hex chars
+        # 2. Rejections: uppercase hex, length != 64, non-hex chars, trailing newline
         invalid_shas = [
+            valid_sha + "\n",  # trailing newline rejected by fullmatch
             "E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855",  # uppercase
             "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b85",  # 63 chars
             "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b8550",  # 65 chars
@@ -1130,6 +1206,104 @@ class TestStageContracts(unittest.TestCase):
         self.assertIsInstance(MinimalReply(), ReplyStage)
         self.assertIsInstance(MinimalSandbox(), SandboxStage)
         self.assertIsInstance(MinimalLLM(), LLMStage)
+
+    def test_collections_raw_validation_rejects_non_sequences(self) -> None:
+        """Finding 2: Collections in from_dict/from_json must reject null, 42, string, dict."""
+        import json
+
+        bad_values = [None, 42, "a_raw_string", {"key": "val"}]
+
+        run_state_payload = {
+            "case_id": "case-123",
+            "client_id": "client-abc",
+            "repo_ref": "octocat/Hello-World",
+            "channel": "slack",
+            "report_text": "Bug report text",
+            "state": "created",
+            "created_at": "2026-11-07T12:00:00Z",
+            "updated_at": "2026-11-07T12:00:00Z",
+        }
+        event_payload = {
+            "case_id": "case-123",
+            "event_id": "evt-001",
+            "ts": "2026-11-07T12:00:00Z",
+            "source": "coordinator",
+            "type": "note_added",
+        }
+
+        # 1. RunState.evidence_ids
+        for bad_val in bad_values:
+            with self.subTest(collection="RunState.evidence_ids", val=bad_val):
+                p = dict(run_state_payload)
+                p["evidence_ids"] = bad_val
+                with self.assertRaises(ContractValidationError):
+                    RunState.from_dict(p)
+                with self.assertRaises(ContractValidationError):
+                    RunState.from_json(json.dumps(p))
+
+        # 2. Event.evidence_refs
+        for bad_val in bad_values:
+            with self.subTest(collection="Event.evidence_refs", val=bad_val):
+                p = dict(event_payload)
+                p["evidence_refs"] = bad_val
+                with self.assertRaises(ContractValidationError):
+                    Event.from_dict(p)
+                with self.assertRaises(ContractValidationError):
+                    Event.from_json(json.dumps(p))
+
+        # 3. TriageRecord.suspect_files
+        for bad_val in bad_values:
+            with self.subTest(collection="TriageRecord.suspect_files", val=bad_val):
+                p = {"input": "in", "expected": "exp", "observed": "obs", "suspect_files": bad_val}
+                with self.assertRaises(ContractValidationError):
+                    TriageRecord.from_dict(p)
+                with self.assertRaises(ContractValidationError):
+                    TriageRecord.from_json(json.dumps(p))
+
+        # 4. NeedsInfo.missing_fields
+        for bad_val in bad_values:
+            with self.subTest(collection="NeedsInfo.missing_fields", val=bad_val):
+                p = {"missing_fields": bad_val, "question_to_support": "Why?"}
+                with self.assertRaises(ContractValidationError):
+                    NeedsInfo.from_dict(p)
+                with self.assertRaises(ContractValidationError):
+                    NeedsInfo.from_json(json.dumps(p))
+
+        # 5. Patch.files_changed
+        for bad_val in bad_values:
+            with self.subTest(collection="Patch.files_changed", val=bad_val):
+                p = {"diff_ref": "diff/1", "files_changed": bad_val}
+                with self.assertRaises(ContractValidationError):
+                    Patch.from_dict(p)
+                with self.assertRaises(ContractValidationError):
+                    Patch.from_json(json.dumps(p))
+
+        # 6. Verdict.reasons
+        for bad_val in bad_values:
+            with self.subTest(collection="Verdict.reasons", val=bad_val):
+                tr = {"command": "pytest", "exit_code": 0, "duration_s": 1.0, "output_ref": "out"}
+                p = {
+                    "before": tr,
+                    "after": tr,
+                    "suite": tr,
+                    "base_revision": "rev1",
+                    "fix_revision": "rev2",
+                    "result": "env_error",
+                    "reasons": bad_val,
+                }
+                with self.assertRaises(ContractValidationError):
+                    Verdict.from_dict(p)
+                with self.assertRaises(ContractValidationError):
+                    Verdict.from_json(json.dumps(p))
+
+        # 7. DeliveryResult.evidence_refs
+        for bad_val in bad_values:
+            with self.subTest(collection="DeliveryResult.evidence_refs", val=bad_val):
+                p = {"kind": "local_package", "url_or_path": "path/pkg", "evidence_refs": bad_val}
+                with self.assertRaises(ContractValidationError):
+                    DeliveryResult.from_dict(p)
+                with self.assertRaises(ContractValidationError):
+                    DeliveryResult.from_json(json.dumps(p))
 
 
 if __name__ == "__main__":
