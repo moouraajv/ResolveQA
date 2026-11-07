@@ -13,6 +13,8 @@ from .validators import (
     require_bool,
     require_non_empty_str,
     require_optional_non_empty_str,
+    require_posix_relative_path,
+    require_sha256_hex,
     require_utc_iso8601_timestamp,
 )
 
@@ -35,8 +37,12 @@ class Evidence:
         )
         object.__setattr__(self, "case_id", require_non_empty_str(self.case_id, "case_id"))
         object.__setattr__(self, "kind", parse_enum(EvidenceKind, self.kind, "kind"))
-        object.__setattr__(self, "path", require_non_empty_str(self.path, "path"))
-        object.__setattr__(self, "sha256", require_non_empty_str(self.sha256, "sha256"))
+        object.__setattr__(
+            self, "path", require_posix_relative_path(self.path, "path")
+        )
+        object.__setattr__(
+            self, "sha256", require_sha256_hex(self.sha256, "sha256")
+        )
         object.__setattr__(
             self, "created_at", require_utc_iso8601_timestamp(self.created_at, "created_at")
         )

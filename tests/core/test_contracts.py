@@ -446,6 +446,62 @@ class TestEvidenceContract(unittest.TestCase):
         self.assertEqual(evidence.revision, "abc1234")
         self.assertFalse(evidence.simulated)
 
+    def test_path_posix_relative_normalization_and_rejections(self) -> None:
+        """Requirement 3: Evidence.path POSIX relative normalization and strict rejections."""
+        # 1. Normalization of redundant slashes or ./
+        p = dict(self.valid_evidence_payload)
+        p["path"] = "./evidence/sub//ev-001.patch"
+        ev = Evidence.from_dict(p)
+        self.assertEqual(ev.path, "evidence/sub/ev-001.patch")
+
+        # 2. Rejections
+        invalid_paths = [
+            "/runs/case-123/evidence/ev.patch",  # absolute
+            "/evidence/ev.patch",  # absolute
+            "evidence/../ev.patch",  # parent traversal ..
+            "../ev.patch",
+            "evidence/..",
+            "..",
+            "evidence\\ev.patch",  # backslash
+            "C:evidence/ev.patch",  # drive letter
+            "d:/evidence/ev.patch",  # drive letter
+            "",  # empty
+            "   ",  # whitespace
+            ".",  # dot
+            "./",  # dot-slash
+        ]
+        for bad_path in invalid_paths:
+            with self.subTest(bad_path=bad_path):
+                p_bad = dict(self.valid_evidence_payload)
+                p_bad["path"] = bad_path
+                with self.assertRaises(ContractValidationError):
+                    Evidence.from_dict(p_bad)
+
+    def test_sha256_lowercase_hex_validation(self) -> None:
+        """Requirement 3: sha256 exactly 64 lowercase hex characters."""
+        # 1. Exactly 64 lowercase hex is valid
+        valid_sha = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+        p = dict(self.valid_evidence_payload)
+        p["sha256"] = valid_sha
+        ev = Evidence.from_dict(p)
+        self.assertEqual(ev.sha256, valid_sha)
+
+        # 2. Rejections: uppercase hex, length != 64, non-hex chars
+        invalid_shas = [
+            "E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855",  # uppercase
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b85",  # 63 chars
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b8550",  # 65 chars
+            "g3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",  # non-hex char 'g'
+            "",
+            None,
+        ]
+        for bad_sha in invalid_shas:
+            with self.subTest(bad_sha=bad_sha):
+                p_bad = dict(self.valid_evidence_payload)
+                p_bad["sha256"] = bad_sha
+                with self.assertRaises(ContractValidationError):
+                    Evidence.from_dict(p_bad)
+
     def test_evidence_created_at_requires_utc_iso8601(self) -> None:
         """Evidence.created_at requires valid UTC ISO 8601 timestamp."""
         # Valid with +00:00

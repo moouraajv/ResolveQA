@@ -2,12 +2,17 @@
 
 from datetime import datetime, timezone
 from enum import Enum
+import posixpath
+import re
 from typing import Any, Optional, TypeVar
 
 from .enums import BlockedReason, CaseState, TERMINAL_STATES
 from .errors import ContractValidationError
 
 E = TypeVar("E", bound=Enum)
+
+_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+_DRIVE_LETTER_RE = re.compile(r"^[a-zA-Z]:")
 
 
 def parse_enum(enum_cls: type[E], value: Any, field_name: str) -> E:
@@ -93,6 +98,52 @@ def require_utc_iso8601_timestamp(value: Any, field_name: str) -> str:
             f"Field '{field_name}' timestamp {value!r} must be in UTC (+00:00 or 'Z'), got offset {dt.utcoffset()}."
         )
 
+    return value
+
+
+def require_posix_relative_path(value: Any, field_name: str) -> str:
+    """Validate that path is a relative POSIX path, normalized, rejecting .., backslash, drive letters, and empty."""
+    if not isinstance(value, str) or not value.strip():
+        raise ContractValidationError(
+            f"Field '{field_name}' must be a non-empty relative path string, got {value!r}."
+        )
+    if "\\" in value:
+        raise ContractValidationError(
+            f"Field '{field_name}' must use POSIX slashes only; backslash is forbidden: {value!r}."
+        )
+    if _DRIVE_LETTER_RE.match(value):
+        raise ContractValidationError(
+            f"Field '{field_name}' must not include a drive letter: {value!r}."
+        )
+    if value.startswith("/"):
+        raise ContractValidationError(
+            f"Field '{field_name}' must be a relative path, not absolute: {value!r}."
+        )
+    raw_segments = value.split("/")
+    if any(segment == ".." for segment in raw_segments):
+        raise ContractValidationError(
+            f"Field '{field_name}' must not contain '..' parent traversal segments: {value!r}."
+        )
+
+    normalized = posixpath.normpath(value)
+    if normalized in (".", ""):
+        raise ContractValidationError(
+            f"Field '{field_name}' cannot be empty or '.': {value!r}."
+        )
+    if normalized.startswith("/") or normalized.startswith(".."):
+        raise ContractValidationError(
+            f"Field '{field_name}' normalized path is invalid: {normalized!r}."
+        )
+
+    return normalized
+
+
+def require_sha256_hex(value: Any, field_name: str) -> str:
+    """Validate that sha256 is exactly 64 lowercase hexadecimal characters."""
+    if not isinstance(value, str) or not _SHA256_RE.match(value):
+        raise ContractValidationError(
+            f"Field '{field_name}' must be exactly 64 lowercase hexadecimal characters, got {value!r}."
+        )
     return value
 
 
