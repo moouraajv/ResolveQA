@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import json
 import os
 import re
 import shlex
@@ -17,6 +18,9 @@ from typing import Iterator
 
 from resolveqa.contracts import ExecResult
 
+DEFAULT_MAX_OUTPUT_BYTES = 65536
+TRUNCATION_SUFFIX = "\n...[truncated: output exceeded max_output_bytes]"
+
 
 def _discover_default_base_root() -> Path:
     """Locate repository root by searching upwards for pyproject.toml or falling back safely."""
@@ -25,6 +29,15 @@ def _discover_default_base_root() -> Path:
         if (parent / "pyproject.toml").is_file() or (parent / ".git").exists():
             return parent
     return here.parents[3]
+
+
+def _load_max_output_bytes(base_root: Path) -> int:
+    limits_file = base_root / "config" / "limits.json"
+    if limits_file.is_file():
+        with contextlib.suppress(Exception):
+            data = json.loads(limits_file.read_text(encoding="utf-8"))
+            return int(data.get("max_output_bytes", DEFAULT_MAX_OUTPUT_BYTES))
+    return DEFAULT_MAX_OUTPUT_BYTES
 
 
 _SECRET_PATTERNS = [
@@ -44,6 +57,34 @@ def redact_secrets(text: str) -> str:
     for pattern in _SECRET_PATTERNS:
         scrubbed = pattern.sub("[REDACTED_SECRET]", scrubbed)
     return scrubbed
+
+
+def _read_bounded_stream(stream_file: tempfile._TemporaryFileWrapper | object, max_bytes: int) -> tuple[str, bool]:
+    """Read up to `max_bytes` from `stream_file`, returning (decoded_text, was_truncated)."""
+    stream_file.seek(0)  # type: ignore[attr-defined]
+    raw = stream_file.read(max_bytes + 1)  # type: ignore[attr-defined]
+    if len(raw) > max_bytes:
+        clipped = raw[:max_bytes].decode("utf-8", errors="replace") + TRUNCATION_SUFFIX
+        return clipped, True
+    return raw.decode("utf-8", errors="replace"), False
+
+
+def _make_exec_result(
+    exit_code: int,
+    stdout_ref: str,
+    stderr_ref: str,
+    timed_out: bool,
+    truncated: bool = False,
+) -> ExecResult:
+    """Create an `ExecResult` and attach the `truncated` flag without altering frozen contracts."""
+    res = ExecResult(
+        exit_code=exit_code,
+        stdout_ref=stdout_ref,
+        stderr_ref=stderr_ref,
+        timed_out=timed_out,
+    )
+    res.truncated = bool(truncated)  # type: ignore[attr-defined]
+    return res
 
 
 def _terminate_process_group(proc: subprocess.Popen[bytes], grace_s: float = 0.2) -> None:
@@ -76,9 +117,20 @@ def _terminate_process_group(proc: subprocess.Popen[bytes], grace_s: float = 0.2
 class LocalSandbox:
     """Execute target repository commands in an isolated temporary copy with a clean environment."""
 
-    def __init__(self, base_root: Path | str | None = None, default_timeout_s: float = 600.0) -> None:
+    def __init__(
+        self,
+        base_root: Path | str | None = None,
+        default_timeout_s: float = 600.0,
+        max_output_bytes: int | None = None,
+    ) -> None:
         self.base_root = Path(base_root).resolve() if base_root is not None else _discover_default_base_root()
         self.default_timeout_s = float(default_timeout_s)
+        self.max_output_bytes = (
+            int(max_output_bytes) if max_output_bytes is not None else _load_max_output_bytes(self.base_root)
+        )
+        if self.max_output_bytes <= 0:
+            raise ValueError("max_output_bytes must be positive")
+        self.last_output_truncated: bool = False
 
     def resolve_workdir(self, workdir_ref: str | Path) -> Path:
         """Resolve a relative repository reference strictly inside `base_root`, rejecting '..', absolutes, and external symlinks."""
@@ -160,26 +212,22 @@ class LocalSandbox:
         command: str,
         timeout_s: float | None = None,
     ) -> ExecResult:
-        """Execute `command` inside an isolated temporary copy of `workdir_ref` in a new process session."""
+        """Execute `command` inside an isolated temporary copy of `workdir_ref` with bounded output."""
+        self.last_output_truncated = False
         effective_timeout = float(timeout_s if timeout_s is not None else self.default_timeout_s)
         if effective_timeout <= 0:
             raise ValueError("timeout_s must be positive")
 
         if not isinstance(command, str) or not command.strip():
-            return ExecResult(exit_code=2, stdout_ref="", stderr_ref="Invalid empty command", timed_out=False)
+            return _make_exec_result(2, "", "Invalid empty command", False, False)
 
         try:
             argv = shlex.split(command)
         except ValueError as err:
-            return ExecResult(
-                exit_code=2,
-                stdout_ref="",
-                stderr_ref=redact_secrets(f"Invalid command syntax: {err}"),
-                timed_out=False,
-            )
+            return _make_exec_result(2, "", redact_secrets(f"Invalid command syntax: {err}"), False, False)
 
         if not argv:
-            return ExecResult(exit_code=2, stdout_ref="", stderr_ref="Empty command argument list", timed_out=False)
+            return _make_exec_result(2, "", "Empty command argument list", False, False)
 
         if argv[0] in {"python", "python3"}:
             argv[0] = sys.executable
@@ -200,12 +248,7 @@ class LocalSandbox:
                             start_new_session=True,
                         )
                     except OSError as exc:
-                        return ExecResult(
-                            exit_code=127,
-                            stdout_ref="",
-                            stderr_ref=redact_secrets(str(exc)),
-                            timed_out=False,
-                        )
+                        return _make_exec_result(127, "", redact_secrets(str(exc)), False, False)
 
                     timed_out = False
                     try:
@@ -217,31 +260,28 @@ class LocalSandbox:
                         if proc.poll() is None:
                             _terminate_process_group(proc)
 
-                    out_f.seek(0)
-                    err_f.seek(0)
-                    raw_out = out_f.read().decode("utf-8", errors="replace")
-                    raw_err = err_f.read().decode("utf-8", errors="replace")
+                    raw_out, out_trunc = _read_bounded_stream(out_f, self.max_output_bytes)
+                    raw_err, err_trunc = _read_bounded_stream(err_f, self.max_output_bytes)
+                    truncated = out_trunc or err_trunc
+                    self.last_output_truncated = truncated
 
                     if timed_out:
-                        return ExecResult(
+                        return _make_exec_result(
                             exit_code=124,
                             stdout_ref=redact_secrets(raw_out),
                             stderr_ref=redact_secrets(raw_err or f"Command timed out after {effective_timeout}s"),
                             timed_out=True,
+                            truncated=truncated,
                         )
-                    return ExecResult(
+                    return _make_exec_result(
                         exit_code=int(proc.returncode if proc.returncode is not None else 1),
                         stdout_ref=redact_secrets(raw_out),
                         stderr_ref=redact_secrets(raw_err),
                         timed_out=False,
+                        truncated=truncated,
                     )
         except Exception as err:
-            return ExecResult(
-                exit_code=2,
-                stdout_ref="",
-                stderr_ref=redact_secrets(str(err)),
-                timed_out=False,
-            )
+            return _make_exec_result(2, "", redact_secrets(str(err)), False, False)
 
 
 Sandbox = LocalSandbox
