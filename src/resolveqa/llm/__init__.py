@@ -4,16 +4,20 @@ from .adapter import (
     DeterministicMockLLM,
     LLMAdapter,
     LLMLimitExceededError,
+    LLMOutputError,
     build_delimited_messages,
     delimit_untrusted_data,
     load_max_llm_calls,
+    validate_llm_output,
 )
 
 __all__ = [
     "DeterministicMockLLM",
     "LLMAdapter",
     "LLMLimitExceededError",
+    "LLMOutputError",
     "build_delimited_messages",
     "delimit_untrusted_data",
     "load_max_llm_calls",
+    "validate_llm_output",
 ]
