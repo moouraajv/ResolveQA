@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import contextlib
+import os
 import re
 import shlex
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 from typing import Iterator
 
@@ -43,6 +46,33 @@ def redact_secrets(text: str) -> str:
     return scrubbed
 
 
+def _terminate_process_group(proc: subprocess.Popen[bytes], grace_s: float = 0.2) -> None:
+    """Terminate an entire process group started with start_new_session=True (SIGTERM then SIGKILL)."""
+    try:
+        pgid = os.getpgid(proc.pid)
+    except ProcessLookupError:
+        pgid = proc.pid
+
+    try:
+        os.killpg(pgid, signal.SIGTERM)
+    except ProcessLookupError:
+        pass
+
+    deadline = time.monotonic() + grace_s
+    while time.monotonic() < deadline:
+        if proc.poll() is not None:
+            break
+        time.sleep(0.02)
+
+    try:
+        os.killpg(pgid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+
+    with contextlib.suppress(Exception):
+        proc.wait(timeout=1.0)
+
+
 class LocalSandbox:
     """Execute target repository commands in an isolated temporary copy with a clean environment."""
 
@@ -63,7 +93,6 @@ class LocalSandbox:
         if ".." in raw_path.parts or raw_path.parts == (".",):
             raise ValueError(f"Parent traversal ('..') or current root ('.') is not allowed in workdir_ref: {workdir_ref!r}")
 
-        # Walk component by component from base_root to detect any symlink escaping base_root
         current = self.base_root
         for part in raw_path.parts:
             current = current / part
@@ -131,18 +160,13 @@ class LocalSandbox:
         command: str,
         timeout_s: float | None = None,
     ) -> ExecResult:
-        """Execute `command` inside an isolated temporary copy of `workdir_ref` without shell."""
+        """Execute `command` inside an isolated temporary copy of `workdir_ref` in a new process session."""
         effective_timeout = float(timeout_s if timeout_s is not None else self.default_timeout_s)
         if effective_timeout <= 0:
             raise ValueError("timeout_s must be positive")
 
         if not isinstance(command, str) or not command.strip():
-            return ExecResult(
-                exit_code=2,
-                stdout_ref="",
-                stderr_ref="Invalid empty command",
-                timed_out=False,
-            )
+            return ExecResult(exit_code=2, stdout_ref="", stderr_ref="Invalid empty command", timed_out=False)
 
         try:
             argv = shlex.split(command)
@@ -155,12 +179,7 @@ class LocalSandbox:
             )
 
         if not argv:
-            return ExecResult(
-                exit_code=2,
-                stdout_ref="",
-                stderr_ref="Empty command argument list",
-                timed_out=False,
-            )
+            return ExecResult(exit_code=2, stdout_ref="", stderr_ref="Empty command argument list", timed_out=False)
 
         if argv[0] in {"python", "python3"}:
             argv[0] = sys.executable
@@ -168,37 +187,52 @@ class LocalSandbox:
         try:
             with self.isolated_copy(workdir_ref) as workspace_dir:
                 clean_env = self.build_clean_env(workspace_dir)
-                try:
-                    completed = subprocess.run(
-                        argv,
-                        cwd=str(workspace_dir),
-                        env=clean_env,
-                        shell=False,
-                        capture_output=True,
-                        text=True,
-                        timeout=effective_timeout,
-                        check=False,
-                    )
+                with tempfile.TemporaryFile() as out_f, tempfile.TemporaryFile() as err_f:
+                    try:
+                        proc = subprocess.Popen(
+                            argv,
+                            cwd=str(workspace_dir),
+                            env=clean_env,
+                            shell=False,
+                            stdin=subprocess.DEVNULL,
+                            stdout=out_f,
+                            stderr=err_f,
+                            start_new_session=True,
+                        )
+                    except OSError as exc:
+                        return ExecResult(
+                            exit_code=127,
+                            stdout_ref="",
+                            stderr_ref=redact_secrets(str(exc)),
+                            timed_out=False,
+                        )
+
+                    timed_out = False
+                    try:
+                        proc.wait(timeout=effective_timeout)
+                    except subprocess.TimeoutExpired:
+                        timed_out = True
+                        _terminate_process_group(proc)
+                    finally:
+                        if proc.poll() is None:
+                            _terminate_process_group(proc)
+
+                    out_f.seek(0)
+                    err_f.seek(0)
+                    raw_out = out_f.read().decode("utf-8", errors="replace")
+                    raw_err = err_f.read().decode("utf-8", errors="replace")
+
+                    if timed_out:
+                        return ExecResult(
+                            exit_code=124,
+                            stdout_ref=redact_secrets(raw_out),
+                            stderr_ref=redact_secrets(raw_err or f"Command timed out after {effective_timeout}s"),
+                            timed_out=True,
+                        )
                     return ExecResult(
-                        exit_code=int(completed.returncode),
-                        stdout_ref=redact_secrets(completed.stdout or ""),
-                        stderr_ref=redact_secrets(completed.stderr or ""),
-                        timed_out=False,
-                    )
-                except subprocess.TimeoutExpired as exc:
-                    raw_out = exc.stdout.decode("utf-8", errors="replace") if isinstance(exc.stdout, bytes) else (exc.stdout or "")
-                    raw_err = exc.stderr.decode("utf-8", errors="replace") if isinstance(exc.stderr, bytes) else (exc.stderr or "")
-                    return ExecResult(
-                        exit_code=124,
+                        exit_code=int(proc.returncode if proc.returncode is not None else 1),
                         stdout_ref=redact_secrets(raw_out),
-                        stderr_ref=redact_secrets(raw_err or f"Command timed out after {effective_timeout}s"),
-                        timed_out=True,
-                    )
-                except OSError as exc:
-                    return ExecResult(
-                        exit_code=127,
-                        stdout_ref="",
-                        stderr_ref=redact_secrets(str(exc)),
+                        stderr_ref=redact_secrets(raw_err),
                         timed_out=False,
                     )
         except Exception as err:
