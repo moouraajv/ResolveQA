@@ -1,4 +1,17 @@
-"""Isolated local process Sandbox implementation (RFC-0001 §3.3, §6.1, §9 D2)."""
+"""Isolated local process Sandbox implementation (RFC-0001 §3.3, §6.1, §9 D2).
+
+ISOLATION BOUNDARIES AND KNOWN MVP LIMITATIONS (D2-a):
+- Process & Working Directory Isolation: Commands run in a temporary directory copy
+  restricted to paths inside `base_root` (rejecting absolute paths, `..`, and external
+  symlinks), in a dedicated process session (`start_new_session=True`) whose full process
+  group (`os.killpg`) is terminated on timeout, with a sanitized environment free of
+  host Git tokens, cloud credentials, or LLM API keys, and bounded stdout/stderr capture.
+- Non-Goals / Roadmap Boundaries (D2-b, PRD §7): `LocalSandbox` runs under the same OS
+  user (`uid`/`gid`), without Linux network namespace isolation (`unshare -n`), and
+  without filesystem chroot/mount namespace isolation (so subprocesses still share OS-level
+  read visibility over world-readable absolute paths on the host). Dedicated OS users,
+  containers, and network namespace isolation (`unshare -n`) belong to the roadmap.
+"""
 
 from __future__ import annotations
 
