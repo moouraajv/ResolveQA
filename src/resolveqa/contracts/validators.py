@@ -12,7 +12,7 @@ from .errors import ContractValidationError
 
 E = TypeVar("E", bound=Enum)
 
-_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+_SHA256_RE = re.compile(r"[0-9a-f]{64}")
 _DRIVE_LETTER_RE = re.compile(r"^[a-zA-Z]:")
 
 
@@ -108,6 +108,10 @@ def require_posix_relative_path(value: Any, field_name: str) -> str:
         raise ContractValidationError(
             f"Field '{field_name}' must be a non-empty relative path string, got {value!r}."
         )
+    if any(ord(c) < 32 for c in value):
+        raise ContractValidationError(
+            f"Field '{field_name}' must not contain null bytes or control characters: {value!r}."
+        )
     if "\\" in value:
         raise ContractValidationError(
             f"Field '{field_name}' must use POSIX slashes only; backslash is forbidden: {value!r}."
@@ -132,9 +136,19 @@ def require_posix_relative_path(value: Any, field_name: str) -> str:
         raise ContractValidationError(
             f"Field '{field_name}' cannot be empty or '.': {value!r}."
         )
-    if normalized.startswith("/") or normalized.startswith(".."):
+    if normalized.startswith("/"):
         raise ContractValidationError(
-            f"Field '{field_name}' normalized path is invalid: {normalized!r}."
+            f"Field '{field_name}' must be a relative path, not absolute: {normalized!r}."
+        )
+
+    normalized_segments = normalized.split("/")
+    if any(segment == ".." for segment in normalized_segments):
+        raise ContractValidationError(
+            f"Field '{field_name}' normalized path must not contain '..' traversal segments: {normalized!r}."
+        )
+    if any(_DRIVE_LETTER_RE.match(seg) for seg in normalized_segments) or _DRIVE_LETTER_RE.match(normalized):
+        raise ContractValidationError(
+            f"Field '{field_name}' must not contain drive letters: {normalized!r}."
         )
 
     return normalized
@@ -142,62 +156,18 @@ def require_posix_relative_path(value: Any, field_name: str) -> str:
 
 def require_sha256_hex(value: Any, field_name: str) -> str:
     """Validate that sha256 is exactly 64 lowercase hexadecimal characters."""
-    if not isinstance(value, str) or not _SHA256_RE.match(value):
+    if not isinstance(value, str) or not _SHA256_RE.fullmatch(value):
         raise ContractValidationError(
             f"Field '{field_name}' must be exactly 64 lowercase hexadecimal characters, got {value!r}."
         )
     return value
 
 
-def validate_terminal_reason(state: CaseState, terminal_reason: Optional[str]) -> Optional[str]:
+def validate_terminal_reason(state: CaseState, terminal_reason: Any) -> Any:
     """Validate terminal_reason structured invariants by state (RFC-0001 §4)."""
-    if state == CaseState.VERIFIED:
-        if terminal_reason is not None:
-            raise ContractValidationError("Verified terminal state must not have a terminal_reason.")
-        return None
+    from .terminal_reason import validate_terminal_reason as _vtr
 
-    if state not in TERMINAL_STATES:
-        if terminal_reason is not None:
-            raise ContractValidationError(
-                f"Non-terminal state '{state.value}' must not have a terminal_reason."
-            )
-        return None
-
-    if state == CaseState.NEEDS_INFO:
-        if terminal_reason is None or not isinstance(terminal_reason, str) or not terminal_reason.strip():
-            raise ContractValidationError(
-                "Terminal state 'needs_info' requires a non-empty question as terminal_reason."
-            )
-        return terminal_reason
-
-    if state == CaseState.INFRA_ERROR:
-        if terminal_reason is None or not isinstance(terminal_reason, str) or not terminal_reason.strip():
-            raise ContractValidationError(
-                "Terminal state 'infra_error' requires a non-empty detail as terminal_reason."
-            )
-        return terminal_reason
-
-    if state == CaseState.BLOCKED:
-        if terminal_reason is None or not isinstance(terminal_reason, str) or not terminal_reason.strip():
-            raise ContractValidationError(
-                "Terminal state 'blocked' requires a non-empty terminal_reason."
-            )
-        parts = terminal_reason.split(":", 1)
-        code = parts[0].strip()
-        valid_codes = {r.value for r in BlockedReason}
-        if code not in valid_codes:
-            raise ContractValidationError(
-                f"Blocked terminal_reason must specify one of {sorted(valid_codes)}, got {code!r}."
-            )
-        if len(parts) > 1:
-            detail = parts[1].strip()
-            if not detail:
-                raise ContractValidationError(
-                    "Optional detail following ':' in blocked terminal_reason must not be empty."
-                )
-        return terminal_reason
-
-    return terminal_reason
+    return _vtr(state, terminal_reason)
 
 
 def require_tuple_of_strings(items: Any, field_name: str) -> tuple[str, ...]:
