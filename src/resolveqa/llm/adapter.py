@@ -478,8 +478,14 @@ class DeterministicMockLLM:
             return json.dumps(
                 {
                     "file": "checkout.py",
-                    "search": "    return round(float(subtotal), 2)",
-                    "replace": "    return round(float(subtotal) - discount, 2)",
+                    "search": (
+                        "    discount = round(float(subtotal) * (pct / 100.0), 2)\n"
+                        "    return round(float(subtotal), 2)"
+                    ),
+                    "replace": (
+                        "    discount = round(float(subtotal) * (pct / 100.0), 2)\n"
+                        "    return round(float(subtotal) - discount, 2)"
+                    ),
                 },
                 ensure_ascii=False,
                 sort_keys=True,
