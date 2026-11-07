@@ -8,6 +8,13 @@ from typing import Any, Optional
 
 from .enums import CaseState, ChannelType
 from .errors import ContractValidationError
+from .terminal_reason import (
+    BlockedTerminalReason,
+    InfraErrorTerminalReason,
+    NeedsInfoTerminalReason,
+    TerminalReason,
+    validate_terminal_reason,
+)
 from .validators import (
     decode_json_dict,
     parse_enum,
@@ -16,7 +23,6 @@ from .validators import (
     require_optional_non_empty_str,
     require_tuple_of_strings,
     require_utc_iso8601_timestamp,
-    validate_terminal_reason,
 )
 
 
@@ -61,7 +67,7 @@ class RunState:
     state: CaseState
     created_at: str
     updated_at: str
-    terminal_reason: Optional[str] = None
+    terminal_reason: Optional[TerminalReason] = None
     attempts: Attempts = field(default_factory=Attempts)
     base_revision: Optional[str] = None
     fix_revision: Optional[str] = None
@@ -106,7 +112,7 @@ class RunState:
         self,
         new_state: CaseState | str,
         updated_at: str,
-        terminal_reason: Optional[str] = None,
+        terminal_reason: Optional[TerminalReason | dict[str, Any]] = None,
     ) -> RunState:
         """Return a brand new RunState instance in the new state without mutating self."""
         parsed_new_state = parse_enum(CaseState, new_state, "state")
@@ -134,7 +140,11 @@ class RunState:
             "channel": self.channel.value,
             "report_text": self.report_text,
             "state": self.state.value,
-            "terminal_reason": self.terminal_reason,
+            "terminal_reason": (
+                self.terminal_reason.to_dict()
+                if self.terminal_reason is not None
+                else None
+            ),
             "attempts": self.attempts.to_dict(),
             "base_revision": self.base_revision,
             "fix_revision": self.fix_revision,
@@ -185,7 +195,7 @@ class RunState:
             attempts=attempts,
             base_revision=data.get("base_revision"),
             fix_revision=data.get("fix_revision"),
-            evidence_ids=tuple(data.get("evidence_ids", ())),
+            evidence_ids=data["evidence_ids"] if "evidence_ids" in data else (),
         )
 
     @classmethod
