@@ -101,7 +101,26 @@ class Event:
         self.validate()
 
     def validate(self) -> None:
-        """Validate Event invariants."""
+        """Validate Event invariants (RFC-0001 §3.2)."""
+        if self.type == EventType.STATE_CHANGED:
+            if self.from_state is None:
+                raise ContractValidationError(
+                    "StateChanged event requires a valid 'from_state'."
+                )
+            if self.to_state is None:
+                raise ContractValidationError(
+                    "StateChanged event requires a valid 'to_state'."
+                )
+            if self.from_state == self.to_state:
+                raise ContractValidationError(
+                    f"StateChanged event requires 'from_state' and 'to_state' to be different, got {self.from_state.value} for both."
+                )
+        else:
+            if self.from_state is not None or self.to_state is not None:
+                raise ContractValidationError(
+                    f"Event of type '{self.type.value}' must not have 'from_state' or 'to_state'."
+                )
+
         if self.type == EventType.REPLAY_STARTED and self.replay_of is None:
             raise ContractValidationError(
                 "replay_of is required when event type is ReplayStarted."

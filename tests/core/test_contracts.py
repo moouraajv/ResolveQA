@@ -393,6 +393,8 @@ class TestEventContract(unittest.TestCase):
     def test_replay_event_requires_replay_of_with_valid_ts(self) -> None:
         payload = dict(self.valid_event_payload)
         payload["type"] = EventType.REPLAY_STARTED.value
+        payload["from_state"] = None
+        payload["to_state"] = None
         payload["replay_of"] = None
 
         with self.assertRaises(ContractValidationError) as ctx:
@@ -410,6 +412,160 @@ class TestEventContract(unittest.TestCase):
         payload["replay_of"] = {"case_id": "orig-123", "original_ts": "naive-2026-11-06T10:00:00"}
         with self.assertRaises(ContractValidationError):
             Event.from_dict(payload)
+
+    def test_state_changed_invariants_and_other_events_forbid_states(self) -> None:
+        """Requirement 4: StateChanged requires valid different from/to, other events forbid both."""
+        # 1. StateChanged with identical from and to must fail
+        p_same = dict(self.valid_event_payload)
+        p_same["from_state"] = "created"
+        p_same["to_state"] = "created"
+        with self.assertRaises(ContractValidationError) as ctx:
+            Event.from_dict(p_same)
+        self.assertIn("different", str(ctx.exception))
+
+        # 2. StateChanged with missing from_state or to_state must fail
+        p_missing_from = dict(self.valid_event_payload)
+        p_missing_from["from_state"] = None
+        with self.assertRaises(ContractValidationError):
+            Event.from_dict(p_missing_from)
+
+        p_missing_to = dict(self.valid_event_payload)
+        p_missing_to["to_state"] = None
+        with self.assertRaises(ContractValidationError):
+            Event.from_dict(p_missing_to)
+
+        # 3. Other events forbid from_state and to_state
+        for non_state_type in [
+            EventType.CASE_CREATED,
+            EventType.EVIDENCE_ADDED,
+            EventType.LIMIT_REACHED,
+            EventType.MESSAGE_SENT,
+        ]:
+            with self.subTest(event_type=non_state_type):
+                p_other = {
+                    "event_id": "evt-002",
+                    "case_id": "case-123",
+                    "seq": 2,
+                    "ts": "2026-11-07T12:00:00Z",
+                    "source": "orchestrator",
+                    "type": non_state_type.value,
+                    "from_state": "created",
+                    "to_state": None,
+                }
+                with self.assertRaises(ContractValidationError):
+                    Event.from_dict(p_other)
+
+                p_other["from_state"] = None
+                p_other["to_state"] = "triaging"
+                with self.assertRaises(ContractValidationError):
+                    Event.from_dict(p_other)
+
+                # Valid when both are None
+                p_other["to_state"] = None
+                ev = Event.from_dict(p_other)
+                self.assertIsNone(ev.from_state)
+                self.assertIsNone(ev.to_state)
+
+    def test_state_reconstruction_via_events(self) -> None:
+        """Requirement 4: State reconstruction via sequential StateChanged events."""
+        events = [
+            Event(
+                event_id="e1",
+                case_id="case-1",
+                seq=0,
+                ts="2026-11-07T10:00:00Z",
+                source=EventSource.INTAKE,
+                type=EventType.CASE_CREATED,
+            ),
+            Event(
+                event_id="e2",
+                case_id="case-1",
+                seq=1,
+                ts="2026-11-07T10:01:00Z",
+                source=EventSource.ORCHESTRATOR,
+                type=EventType.STATE_CHANGED,
+                from_state=CaseState.CREATED,
+                to_state=CaseState.TRIAGING,
+            ),
+            Event(
+                event_id="e3",
+                case_id="case-1",
+                seq=2,
+                ts="2026-11-07T10:02:00Z",
+                source=EventSource.ORCHESTRATOR,
+                type=EventType.STATE_CHANGED,
+                from_state=CaseState.TRIAGING,
+                to_state=CaseState.TRIAGED,
+            ),
+            Event(
+                event_id="e4",
+                case_id="case-1",
+                seq=3,
+                ts="2026-11-07T10:03:00Z",
+                source=EventSource.ORCHESTRATOR,
+                type=EventType.STATE_CHANGED,
+                from_state=CaseState.TRIAGED,
+                to_state=CaseState.REPRODUCING,
+            ),
+            Event(
+                event_id="e5",
+                case_id="case-1",
+                seq=4,
+                ts="2026-11-07T10:04:00Z",
+                source=EventSource.ORCHESTRATOR,
+                type=EventType.STATE_CHANGED,
+                from_state=CaseState.REPRODUCING,
+                to_state=CaseState.REPRODUCED,
+            ),
+            Event(
+                event_id="e6",
+                case_id="case-1",
+                seq=5,
+                ts="2026-11-07T10:05:00Z",
+                source=EventSource.ORCHESTRATOR,
+                type=EventType.STATE_CHANGED,
+                from_state=CaseState.REPRODUCED,
+                to_state=CaseState.FIXING,
+            ),
+            Event(
+                event_id="e7",
+                case_id="case-1",
+                seq=6,
+                ts="2026-11-07T10:06:00Z",
+                source=EventSource.ORCHESTRATOR,
+                type=EventType.STATE_CHANGED,
+                from_state=CaseState.FIXING,
+                to_state=CaseState.FIXED,
+            ),
+            Event(
+                event_id="e8",
+                case_id="case-1",
+                seq=7,
+                ts="2026-11-07T10:07:00Z",
+                source=EventSource.ORCHESTRATOR,
+                type=EventType.STATE_CHANGED,
+                from_state=CaseState.FIXED,
+                to_state=CaseState.VERIFYING,
+            ),
+            Event(
+                event_id="e9",
+                case_id="case-1",
+                seq=8,
+                ts="2026-11-07T10:08:00Z",
+                source=EventSource.ORCHESTRATOR,
+                type=EventType.STATE_CHANGED,
+                from_state=CaseState.VERIFYING,
+                to_state=CaseState.VERIFIED,
+            ),
+        ]
+
+        current_state = CaseState.CREATED
+        for ev in events:
+            if ev.type == EventType.STATE_CHANGED:
+                self.assertEqual(ev.from_state, current_state)
+                current_state = ev.to_state
+
+        self.assertEqual(current_state, CaseState.VERIFIED)
 
     def test_event_json_serialization_roundtrip(self) -> None:
         event = Event.from_dict(self.valid_event_payload)
