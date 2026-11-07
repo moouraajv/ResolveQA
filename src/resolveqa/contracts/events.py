@@ -178,7 +178,7 @@ class Event:
             from_state=data.get("from_state"),
             to_state=data.get("to_state"),
             reason=data.get("reason"),
-            evidence_refs=tuple(data.get("evidence_refs", ())),
+            evidence_refs=data["evidence_refs"] if "evidence_refs" in data else (),
             replay_of=replay_of,
         )
 

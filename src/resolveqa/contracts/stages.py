@@ -121,7 +121,7 @@ class TriageRecord:
             input=data["input"],
             expected=data["expected"],
             observed=data["observed"],
-            suspect_files=tuple(data.get("suspect_files", ())),
+            suspect_files=data["suspect_files"] if "suspect_files" in data else (),
             confidence=data.get("confidence", 1.0),
         )
 
@@ -165,7 +165,7 @@ class NeedsInfo:
         if "missing_fields" not in data or "question_to_support" not in data:
             raise ContractValidationError("Missing required fields in NeedsInfo.")
         return cls(
-            missing_fields=tuple(data["missing_fields"]),
+            missing_fields=data["missing_fields"],
             question_to_support=data["question_to_support"],
         )
 
@@ -278,7 +278,7 @@ class Patch:
             raise ContractValidationError("Missing required field 'diff_ref' or 'files_changed'.")
         return cls(
             diff_ref=data["diff_ref"],
-            files_changed=tuple(data["files_changed"]),
+            files_changed=data["files_changed"],
             touches_tests=data.get("touches_tests", False),
             touches_ci=data.get("touches_ci", False),
         )
@@ -454,7 +454,7 @@ class Verdict:
             base_revision=data["base_revision"],
             fix_revision=data["fix_revision"],
             result=data["result"],
-            reasons=tuple(data.get("reasons", ())),
+            reasons=data["reasons"] if "reasons" in data else (),
         )
 
     @classmethod
@@ -504,7 +504,7 @@ class DeliveryResult:
             kind=data["kind"],
             url_or_path=data["url_or_path"],
             label=data.get("label"),
-            evidence_refs=tuple(data.get("evidence_refs", ())),
+            evidence_refs=data["evidence_refs"] if "evidence_refs" in data else (),
         )
 
     @classmethod
