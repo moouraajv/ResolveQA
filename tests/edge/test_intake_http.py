@@ -307,6 +307,42 @@ class TestIntakeHTTP(unittest.TestCase):
         self.assertNotIn("<img src=x", page)
         self.assertIn("&lt;img src=x", page)
 
+    def test_cors_preflight_and_get_allow_listed_origin(self) -> None:
+        allowed = "http://localhost:3000"
+        denied = "https://evil.example"
+        with _LiveServer() as live:
+            preflight = Request(
+                f"{live.base}/api/cases",
+                method="OPTIONS",
+                headers={
+                    "Origin": allowed,
+                    "Access-Control-Request-Method": "POST",
+                    "Access-Control-Request-Headers": "content-type",
+                },
+            )
+            with urlopen(preflight, timeout=5) as resp:
+                self.assertEqual(resp.status, 204)
+                self.assertEqual(resp.headers.get("Access-Control-Allow-Origin"), allowed)
+                self.assertIn("POST", resp.headers.get("Access-Control-Allow-Methods", ""))
+
+            blocked = Request(
+                f"{live.base}/api/cases",
+                method="OPTIONS",
+                headers={"Origin": denied, "Access-Control-Request-Method": "POST"},
+            )
+            with self.assertRaises(HTTPError) as ctx:
+                urlopen(blocked, timeout=5)
+            self.assertEqual(ctx.exception.code, 403)
+
+            health = Request(
+                f"{live.base}/health",
+                method="GET",
+                headers={"Origin": allowed, "Accept": "application/json"},
+            )
+            with urlopen(health, timeout=5) as resp:
+                self.assertEqual(resp.status, 200)
+                self.assertEqual(resp.headers.get("Access-Control-Allow-Origin"), allowed)
+
 
 if __name__ == "__main__":
     unittest.main()
