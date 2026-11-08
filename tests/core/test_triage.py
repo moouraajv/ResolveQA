@@ -332,6 +332,48 @@ class TestTriageSharedRoleMarkers(unittest.TestCase):
         self.assertIsInstance(result, NeedsInfo)
         self.assertEqual(set(result.missing_fields), {"expected", "observed"})
 
+    def test_unmarked_monetary_values_reject_both_llm_role_assignments(self) -> None:
+        reports = (
+            ("o total estranho: R$ 175,00 e R$ 150,00", "total"),
+            ("Cupom FRETE: o total estranho: R$ 175,00 e R$ 150,00", "cupom FRETE"),
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            store = EvidenceStore(runs_root=tmp)
+            for report, input_ in reports:
+                for expected, observed in (("R$ 150,00", "R$ 175,00"), ("R$ 175,00", "R$ 150,00")):
+                    with self.subTest(report=report, expected=expected, observed=observed):
+                        case = _make_case(report)
+                        snapshot = case.to_dict()
+                        triage = Triage(llm=LLMAdapter(
+                            response_override=_payload(input_, expected, observed)), store=store)
+                        result = triage.run(case)
+                        self.assertIsInstance(result, NeedsInfo)
+                        self.assertEqual(list(result.missing_fields), ["expected", "observed"])
+                        self.assertIn("qual foi o valor esperado", result.question_to_support)
+                        self.assertIn("qual foi o valor observado", result.question_to_support)
+                        self.assertTrue(result.question_to_support.endswith("?"))
+                        self.assertEqual(case.to_dict(), snapshot)
+                        evidence = triage.last_evidence_by_case[case.case_id]
+                        payload = json.loads((store.case_dir(case.case_id) / evidence.path).read_text())
+                        self.assertEqual(payload["status"], "needs_info")
+                        self.assertEqual(payload["missing_fields"], ["expected", "observed"])
+
+    def test_labeled_values_keep_llm_role_assignments(self) -> None:
+        cases = (
+            ("Compra de R$ 300,00 com cupom de 10%: esperado R$ 270,00, observado R$ 300,00.",
+             "cupom de 10%", "R$ 270,00", "R$ 300,00"),
+            ("Cupom FRETE: esperado R$ 150,00, cobrado R$ 175,00.",
+             "cupom FRETE", "R$ 150,00", "R$ 175,00"),
+            ("Cupom FRETE: cobraram R$ 175,00, o certo era R$ 150,00.",
+             "cupom FRETE", "R$ 150,00", "R$ 175,00"),
+        )
+        for report, input_, expected, observed in cases:
+            with self.subTest(report=report):
+                result = Triage(llm=LLMAdapter(response_override=_payload(
+                    input_, expected, observed))).run(_make_case(report))
+                self.assertIsInstance(result, TriageRecord)
+                self.assertEqual((result.expected, result.observed), (expected, observed))
+
     def test_report_without_any_marker_asks_for_both(self) -> None:
         result = Triage(llm=LLMAdapter()).run(_make_case("O cupom FRETE nao funcionou direito, 175 e 150."))
         self.assertIsInstance(result, NeedsInfo)

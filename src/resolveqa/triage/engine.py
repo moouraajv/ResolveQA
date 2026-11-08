@@ -146,6 +146,15 @@ def _fold(text: str) -> str:
     return "".join(ch for ch in decomposed if not unicodedata.combining(ch)).lower()
 
 
+def _has_unlabeled_monetary_values(report_text: str) -> bool:
+    """Two money amounts without a shared role marker cannot establish their roles."""
+    folded = _fold(report_text)
+    markers = r"\b(?:" + "|".join(_EXPECTED_MARKERS + _OBSERVED_MARKERS) + r")\b"
+    if re.search(markers, folded):
+        return False
+    return len(re.findall(r"\br\$\s*" + _ROLE_NUMBER, folded)) >= 2
+
+
 def _parse_amount(raw: str) -> Optional[float]:
     token = raw.strip().strip(".,")
     if not token:
@@ -363,6 +372,17 @@ class TriageEngine:
         """Analyze case.report_text and return TriageRecord or NeedsInfo without mutating case."""
         if not isinstance(case, RunState):
             raise TypeError(f"Expected RunState, got {type(case).__name__}")
+
+        if _has_unlabeled_monetary_values(case.report_text):
+            needs_info = NeedsInfo(
+                missing_fields=["expected", "observed"],
+                question_to_support=(
+                    "Para confirmarmos os valores com precisão, você pode esclarecer qual foi o valor esperado "
+                    "e qual foi o valor observado na operação?"
+                ),
+            )
+            self._save_triage_evidence(case.case_id, {"status": "needs_info", **needs_info.to_dict()})
+            return needs_info
 
         messages = build_delimited_messages(
             system_instruction=(
