@@ -11,6 +11,7 @@ import posixpath
 import re
 import shlex
 import shutil
+import sys
 import tempfile
 import time
 from dataclasses import dataclass
@@ -35,15 +36,88 @@ from resolveqa.sandbox import LocalSandbox
 DEFAULT_MAX_FILES_CHANGED = 3
 DEFAULT_TEST_TIMEOUT_S = 600.0
 
+# Basenames (matched case-insensitively, at ANY directory level) that can alter how Python or the
+# test runner starts, discovers plugins or configures itself. A patch must never touch them.
 RUNNER_CONFIG_FILES = (
     "pyproject.toml",
     "pytest.ini",
+    ".pytest.ini",
+    "pytest.toml",
+    ".pytest.toml",
     "setup.cfg",
     "setup.py",
     "tox.ini",
     "noxfile.py",
     "conftest.py",
-    "tests/conftest.py",
+    "unittest.cfg",
+    ".unittest.cfg",
+    "unittest.ini",
+    "nose.cfg",
+    ".noserc",
+    "sitecustomize.py",
+    "usercustomize.py",
+    ".coveragerc",
+)
+VERIFIER_CONFIG_NAME = ".rqa_verifier_pytest.ini"
+VERIFIER_PLUGIN_MODULE = "_rqa_verifier_plugin"
+_PROTECTED_BASENAMES = frozenset(
+    {*(name.lower() for name in RUNNER_CONFIG_FILES), VERIFIER_CONFIG_NAME, f"{VERIFIER_PLUGIN_MODULE}.py"}
+)
+_FORBIDDEN_NEW_SUFFIXES = (".py", ".pyw", ".pyc", ".pth", ".so", ".pyd")
+_VALUE_TYPE_BASES = frozenset({"float", "str", "int", "Decimal", "bool", "bytes", "complex"})
+_SPOOFING_DUNDERS = frozenset({"__eq__", "__ne__", "__hash__"})
+_FORBIDDEN_CODE_RE = re.compile(
+    r"pytest_|hookimpl|hookspec|conftest|__import__|importlib|\bexec\s*\(|\beval\s*\(|sys\.modules|\bbuiltins\b"
+)
+
+# Fixed verifier-owned runner configuration (never the patched workspace's own configuration).
+_FIXED_PYTEST_INI = "[pytest]\nenable_assertion_pass_hook = true\n"
+
+# Verifier-owned plugin loaded only for the `after` run: enforces the exact builtin type on equality checks.
+_VERIFIER_PLUGIN_SOURCE = '''\
+import unittest
+
+_SCALARS = (bool, int, float, str, bytes)
+
+
+def _rqa_check(first, second):
+    if (isinstance(first, _SCALARS) or isinstance(second, _SCALARS)) and type(first) is not type(second):
+        raise AssertionError(
+            "RQA_TYPE_MISMATCH: %s != %s" % (type(first).__name__, type(second).__name__)
+        )
+
+
+def pytest_assertion_pass(item, lineno, orig, expl):
+    return None
+
+
+def pytest_configure(config):
+    original_assert_equal = unittest.TestCase.assertEqual
+
+    def assert_equal(self, first, second, msg=None):
+        original_assert_equal(self, first, second, msg)
+        _rqa_check(first, second)
+
+    unittest.TestCase.assertEqual = assert_equal
+
+    from _pytest.assertion import rewrite
+
+    original_compare = rewrite._call_reprcompare
+
+    def call_reprcompare(ops, results, expls, each_obj):
+        out = original_compare(ops, results, expls, each_obj)
+        for index, op in enumerate(ops):
+            if op == "==" and results[index]:
+                _rqa_check(each_obj[index], each_obj[index + 1])
+        return out
+
+    rewrite._call_reprcompare = call_reprcompare
+'''
+
+RESIDUAL_RISK_NOTE = (
+    "residual_risk: value-type spoofing is only partially mitigated (no __eq__/__ne__/__hash__ or "
+    "float/str/int/Decimal subclasses in the patch; exact type enforced on equality assertions). "
+    "Human review of the patched code is still required."
 )
 
 CI_PATH_PREFIXES = (
@@ -149,9 +223,16 @@ def _is_test_path(rel_path: str, repro_test_path: str | None = None) -> bool:
     return False
 
 
+def _is_protected_runner_file(rel_path: str) -> bool:
+    base = posixpath.basename(posixpath.normpath(rel_path.strip("/"))).lower()
+    return base in _PROTECTED_BASENAMES or base.endswith(".pth") or (
+        base.startswith("pytest_") and base.endswith(".py")
+    )
+
+
 def _is_ci_or_runner_config_path(rel_path: str) -> bool:
     norm = posixpath.normpath(rel_path.strip("/"))
-    if norm in CI_EXACT_NAMES or posixpath.basename(norm) in {"conftest.py", "pytest.ini", "tox.ini"}:
+    if norm in CI_EXACT_NAMES or _is_protected_runner_file(norm):
         return True
     for prefix in CI_PATH_PREFIXES:
         if norm.startswith(prefix) or f"/{prefix}" in norm:
@@ -160,14 +241,14 @@ def _is_ci_or_runner_config_path(rel_path: str) -> bool:
 
 
 def _snapshot_runner_configs(workspace_dir: Path) -> dict[str, str]:
+    """Hash every runner/interpreter configuration file at any directory level."""
     snapshot: dict[str, str] = {}
-    for rel_path in RUNNER_CONFIG_FILES:
-        candidate = workspace_dir / rel_path
+    for candidate in sorted(workspace_dir.rglob("*")):
+        rel = candidate.relative_to(workspace_dir).as_posix()
+        if not _is_protected_runner_file(rel):
+            continue
         if candidate.is_file():
-            snapshot[rel_path] = hashlib.sha256(candidate.read_bytes()).hexdigest()
-    for conftest in sorted(workspace_dir.rglob("conftest.py")):
-        rel = conftest.relative_to(workspace_dir).as_posix()
-        snapshot[rel] = hashlib.sha256(conftest.read_bytes()).hexdigest()
+            snapshot[rel] = hashlib.sha256(candidate.read_bytes()).hexdigest()
     return snapshot
 
 
@@ -528,6 +609,127 @@ def _inspect_patched_code_for_subversion(
     return reasons
 
 
+def _flagged_spoofing_nodes(source: str) -> dict[str, str]:
+    """Return `{ast.dump: description}` for __eq__/__ne__/__hash__ definitions and value-type subclasses."""
+    flagged: dict[str, str] = {}
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return flagged
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name in _SPOOFING_DUNDERS:
+            flagged[ast.dump(node)] = f"defines {node.name}"
+        elif isinstance(node, ast.ClassDef):
+            for base in node.bases:
+                tokens = _attr_or_name_tokens(base)
+                if tokens and tokens[-1] in _VALUE_TYPE_BASES:
+                    flagged[ast.dump(node)] = f"class {node.name} subclasses {tokens[-1]}"
+        elif isinstance(node, (ast.Assign, ast.AnnAssign)):
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            for target in targets:
+                if isinstance(target, ast.Name) and target.id in _SPOOFING_DUNDERS:
+                    flagged[ast.dump(node)] = f"assigns {target.id}"
+    return flagged
+
+
+def _inspect_patch_hardening(
+    before_dir: Path,
+    after_dir: Path,
+    touched_files: tuple[str, ...],
+    repro_test_path: str,
+) -> list[str]:
+    """Reject new Python/loader files, pytest hooks/conftest, dynamic imports and value-type spoofing."""
+    reasons: list[str] = []
+    for rel_path in touched_files:
+        after_file = after_dir / rel_path
+        before_file = before_dir / rel_path
+        lowered = rel_path.lower()
+        is_new = not before_file.exists()
+        if is_new and after_file.exists() and lowered.endswith(_FORBIDDEN_NEW_SUFFIXES):
+            reasons.append(
+                f"patch_rejected: patch creates new file '{rel_path}' outside the allowed target code files"
+            )
+        if _is_test_path(rel_path, repro_test_path) or not lowered.endswith(".py") or not after_file.is_file():
+            continue
+        try:
+            source = after_file.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            reasons.append(f"patch_rejected: patched file '{rel_path}' is not valid UTF-8")
+            continue
+        before_source = before_file.read_text(encoding="utf-8", errors="replace") if before_file.is_file() else ""
+        for match in sorted({m.group(0).strip() for m in _FORBIDDEN_CODE_RE.finditer(source)}):
+            if match in before_source and match not in {"pytest_", "hookimpl", "hookspec", "conftest"}:
+                continue
+            reasons.append(
+                f"patch_rejected: patched file '{rel_path}' contains forbidden pytest hook/dynamic import construct '{match}'"
+            )
+        before_flags = _flagged_spoofing_nodes(before_source)
+        for dump, description in _flagged_spoofing_nodes(source).items():
+            if dump not in before_flags:
+                reasons.append(
+                    f"patch_rejected: patched file '{rel_path}' {description} (value_type_spoofing risk)"
+                )
+    return reasons
+
+
+_FAILED_LINE_RE = re.compile(r"^FAILED\s+(\S+?)::(\S+)", re.MULTILINE)
+_ERROR_LINE_RE = re.compile(r"^ERROR\s+\S+", re.MULTILINE)
+_E_LINE_RE = re.compile(r"^E\s+(.*)$", re.MULTILINE)
+_EXPECTED_TOKEN_RE = re.compile(r"-?\d+(?:[.,]\d+)?|'[^'\n]*'|\"[^\"\n]*\"")
+
+
+def _repro_test_function_names(source_text: str) -> set[str]:
+    try:
+        tree = ast.parse(source_text)
+    except SyntaxError:
+        return set()
+    return {
+        node.name
+        for node in ast.walk(tree)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name.startswith("test_")
+    }
+
+
+def _check_before_red_matches_report(
+    log: str,
+    norm_test_path: str,
+    test_names: set[str],
+    failing_assertion: str | None,
+) -> list[str]:
+    """RED must come from the reproduction test_* and carry the expected value of the report (X2)."""
+    reasons: list[str] = []
+    failed = _FAILED_LINE_RE.findall(log)
+    if not failed:
+        reasons.append("test_invalid: before run did not report a FAILED reproduction test_* function")
+    for failed_path, failed_node in failed:
+        leaf = failed_node.split("::")[-1].split("[")[0]
+        if posixpath.normpath(failed_path) != norm_test_path or leaf not in test_names:
+            reasons.append(
+                f"test_invalid: before failure '{failed_path}::{failed_node}' is not a test_* of the reproduction test"
+            )
+    if _ERROR_LINE_RE.search(log):
+        reasons.append("test_invalid (infra_error): before run reported ERROR entries besides the reproduction failure")
+
+    expected_text = (failing_assertion or "").split("AssertionError", 1)[-1]
+    tokens = list(dict.fromkeys(_EXPECTED_TOKEN_RE.findall(expected_text)))
+    if not tokens:
+        reasons.append(
+            "test_invalid: ReproResult.failing_assertion has no expected value to cross-check the before failure"
+        )
+        return reasons
+    assertion_lines = "\n".join(m.group(1) for m in _E_LINE_RE.finditer(log))
+    if "AssertionError" not in assertion_lines:
+        reasons.append("test_invalid: before test did not fail with AssertionError")
+    else:
+        missing = [t for t in tokens if t not in assertion_lines]
+        if missing:
+            reasons.append(
+                f"test_invalid: before AssertionError does not contain the reported value(s) {missing} "
+                "(failing_assertion); the RED does not reproduce the report"
+            )
+    return reasons
+
+
 class Verification:
     """Deterministic independent Verifier stage (RFC-0001 §3.3, RF-06)."""
 
@@ -537,8 +739,7 @@ class Verification:
         base_root: Path | str | None = None,
         max_files_changed: int | None = None,
         test_timeout_s: float | None = None,
-        test_command_template: str = "python3 -m pytest -v {test_path}",
-        suite_command: str = "python3 -m pytest -v",
+        allow_inline_test_source: bool = False,
     ) -> None:
         if base_root is not None:
             self.base_root = Path(base_root).resolve()
@@ -559,8 +760,43 @@ class Verification:
             if sandbox is not None
             else LocalSandbox(base_root=self.base_root, default_timeout_s=self.test_timeout_s)
         )
-        self.test_command_template = test_command_template
-        self.suite_command = suite_command
+        # `test_source_ref` is an evidence reference. Inline source is accepted only when explicitly enabled (tests).
+        self.allow_inline_test_source = bool(allow_inline_test_source)
+
+    def _pytest_command(self, *targets: str, with_plugin: bool = False) -> str:
+        """Build the verifier-controlled pytest command; never uses the patched workspace configuration."""
+        parts = [
+            "env",
+            "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1",
+            shlex.quote(sys.executable),
+            "-m",
+            "pytest",
+            "-c",
+            VERIFIER_CONFIG_NAME,
+            "--rootdir=.",
+            "-o",
+            "addopts=",
+            "-p",
+            "no:cacheprovider",
+        ]
+        if with_plugin:
+            parts += ["-p", VERIFIER_PLUGIN_MODULE]
+        parts += ["-v", "-rfE", *(shlex.quote(t) for t in targets)]
+        return " ".join(parts)
+
+    @property
+    def suite_command(self) -> str:
+        return self._pytest_command()
+
+    @staticmethod
+    def _install_fixed_runner_config(workdir: Path, with_plugin: bool) -> None:
+        """(Re)write verifier-owned config/plugin AFTER the patch so the workspace cannot influence them."""
+        (workdir / VERIFIER_CONFIG_NAME).write_text(_FIXED_PYTEST_INI, encoding="utf-8")
+        plugin_file = workdir / f"{VERIFIER_PLUGIN_MODULE}.py"
+        if with_plugin:
+            plugin_file.write_text(_VERIFIER_PLUGIN_SOURCE, encoding="utf-8")
+        elif plugin_file.exists():
+            plugin_file.unlink()
 
     def _resolve_test_source(
         self,
@@ -574,23 +810,31 @@ class Verification:
         if "\n" in ref or ref.lstrip().startswith(
             ("import ", "from ", "def ", "class ", "#", "@", '"""', "'''")
         ):
+            if not self.allow_inline_test_source:
+                return None, "test_invalid: inline test_source_ref is only accepted in tests; use an evidence reference"
             return ref.encode("utf-8"), None
 
-        allowed_roots = (self.base_root.resolve(), Path(tempfile.gettempdir()).resolve())
+        case_dir = (self.base_root / "runs" / case.case_id).resolve()
         candidate_paths: list[Path] = []
         raw_ref_path = Path(ref)
-        if not raw_ref_path.is_absolute() and ".." not in raw_ref_path.parts:
-            candidate_paths.append(self.base_root / raw_ref_path)
+        if raw_ref_path.is_absolute():
+            candidate_paths.append(raw_ref_path)
+        elif ".." not in raw_ref_path.parts:
             candidate_paths.append(self.base_root / "runs" / case.case_id / raw_ref_path)
             candidate_paths.append(source_repo_dir / raw_ref_path)
-        elif raw_ref_path.is_absolute():
-            candidate_paths.append(raw_ref_path)
 
         for cand in candidate_paths:
             if cand.is_symlink():
                 return None, f"test_invalid: symlink test_source_ref is forbidden ({ref!r})"
             resolved_cand = cand.resolve()
-            if any(resolved_cand.is_relative_to(root) for root in allowed_roots) and resolved_cand.is_file():
+            allowed = resolved_cand.is_relative_to(case_dir) or (
+                not raw_ref_path.is_absolute() and resolved_cand.is_relative_to(source_repo_dir.resolve())
+            )
+            if not allowed:
+                if raw_ref_path.is_absolute():
+                    return None, f"test_invalid: absolute test_source_ref outside the case folder is forbidden ({ref!r})"
+                continue
+            if resolved_cand.is_file():
                 return resolved_cand.read_bytes(), None
 
         in_repo_test = source_repo_dir / normalized_test_path
@@ -694,14 +938,17 @@ class Verification:
 
     @contextlib.contextmanager
     def _staging_root(self):
-        """Create a temporary staging directory inside `base_root/runs` so `LocalSandbox.exec` accepts relative workdirs."""
+        """Create a private (0700) staging directory inside `base_root/runs` so `LocalSandbox.exec` accepts relative workdirs."""
         runs_dir = self.base_root / "runs"
         created_runs_dir = not runs_dir.exists()
+        tmp_dir: str | None = None
         try:
             runs_dir.mkdir(parents=True, exist_ok=True)
-            with tempfile.TemporaryDirectory(dir=str(runs_dir), prefix=".verify_") as tmp_dir:
-                yield Path(tmp_dir)
+            tmp_dir = tempfile.mkdtemp(prefix=".verify_", dir=str(runs_dir))
+            yield Path(tmp_dir)
         finally:
+            if tmp_dir is not None:
+                shutil.rmtree(tmp_dir, ignore_errors=True)
             if created_runs_dir and runs_dir.is_dir():
                 with contextlib.suppress(OSError):
                     if not any(runs_dir.iterdir()):
@@ -750,7 +997,7 @@ class Verification:
         try:
             norm_test_path = require_posix_relative_path(repro.test_path, "repro.test_path")
         except ContractValidationError as exc:
-            cmd = self.test_command_template.format(test_path=repro.test_path)
+            cmd = self._pytest_command(repro.test_path)
             sentinel = self._sentinel_test_run(cmd, exit_code=2, log_ref=str(exc))
             return Verdict(
                 before=sentinel,
@@ -762,7 +1009,7 @@ class Verification:
                 reasons=(f"test_invalid: {exc}",),
             )
 
-        single_test_cmd = self.test_command_template.format(test_path=shlex.quote(norm_test_path))
+        single_test_cmd = self._pytest_command(norm_test_path)
 
         # Check if reproduction stage already reported an environment failure
         if repro.outcome == ReproOutcome.ENV_ERROR:
@@ -951,6 +1198,9 @@ class Verification:
             rejection_reasons.extend(
                 _inspect_patched_code_for_subversion(after_dir, touched_by_patch, norm_test_path)
             )
+            rejection_reasons.extend(
+                _inspect_patch_hardening(before_dir, after_dir, touched_by_patch, norm_test_path)
+            )
 
             computed_fix_rev = compute_tree_revision(after_dir)
             if case.fix_revision:
@@ -982,6 +1232,11 @@ class Verification:
                     result=VerdictResult.REJECTED,
                     reasons=tuple(dict.fromkeys(rejection_reasons)),
                 )
+
+            # Fixed verifier-owned configuration (never the patched workspace's own configuration).
+            self._install_fixed_runner_config(before_dir, with_plugin=False)
+            self._install_fixed_runner_config(after_dir, with_plugin=True)
+            after_test_cmd = self._pytest_command(norm_test_path, with_plugin=True)
 
             # 1. Execute `before` test run
             before_run, before_exec = self._exec_test_run(before_dir, single_test_cmd)
@@ -1016,10 +1271,14 @@ class Verification:
                     rejection_reasons.append(
                         "test_skipped_or_xfail: before test run reported skipped or xfail"
                     )
-                if "AssertionError" not in before_run.log_ref:
-                    rejection_reasons.append(
-                        "test_invalid: before test did not fail with AssertionError"
+                rejection_reasons.extend(
+                    _check_before_red_matches_report(
+                        before_run.log_ref,
+                        norm_test_path,
+                        _repro_test_function_names(before_test_text),
+                        repro.failing_assertion,
                     )
+                )
 
             if rejection_reasons:
                 sentinel_after = self._sentinel_test_run(
@@ -1040,7 +1299,7 @@ class Verification:
 
             # 2. Execute `after` test run
             if after_test_file.is_file():
-                after_run, after_exec = self._exec_test_run(after_dir, single_test_cmd)
+                after_run, after_exec = self._exec_test_run(after_dir, after_test_cmd)
             else:
                 after_run = self._sentinel_test_run(
                     single_test_cmd,
@@ -1064,6 +1323,10 @@ class Verification:
             if _SKIP_OR_XFAIL_SUMMARY_RE.search(after_run.log_ref):
                 rejection_reasons.append(
                     "test_skipped_or_xfail: reproduction test was skipped or marked xfail on after run"
+                )
+            if "RQA_TYPE_MISMATCH" in after_run.log_ref:
+                rejection_reasons.append(
+                    "patch_rejected: returned value does not have the exact expected type (value_type_spoofing)"
                 )
             if after_run.exit_code != 0:
                 rejection_reasons.append(
@@ -1119,7 +1382,7 @@ class Verification:
             base_revision=base_revision,
             fix_revision=fix_revision,
             result=VerdictResult.VERIFIED,
-            reasons=(),
+            reasons=(RESIDUAL_RISK_NOTE,),
         )
 
 
