@@ -280,5 +280,63 @@ class TestTriageStage(unittest.TestCase):
             triage.run(case)
 
 
+def _payload(input_: str, expected: str, observed: str) -> str:
+    return json.dumps(
+        {
+            "status": "triaged",
+            "input": input_,
+            "expected": expected,
+            "observed": observed,
+            "suspect_files": ["checkout.py"],
+            "confidence": 0.9,
+        }
+    )
+
+
+class TestTriageSharedRoleMarkers(unittest.TestCase):
+    """PR #49 adjustments 1 and 2: one shared marker set for expected/observed."""
+
+    def test_original_300_270_still_triaged(self) -> None:
+        report = (
+            "Realizei uma compra de R$ 300,00 usando cupom de 10%. "
+            "O valor esperado era R$ 270,00, porém o valor observado foi R$ 300,00."
+        )
+        result = Triage(llm=LLMAdapter()).run(_make_case(report))
+        self.assertIsInstance(result, TriageRecord)
+        self.assertEqual((result.expected, result.observed), ("R$ 270,00", "R$ 300,00"))
+
+    def test_150_175_esperado_cobrado_without_percent(self) -> None:
+        report = "Usei o cupom FRETE na compra: esperado R$ 150,00 mas cobrado R$ 175,00."
+        result = Triage(llm=LLMAdapter()).run(_make_case(report))
+        self.assertIsInstance(result, TriageRecord)
+        self.assertEqual((result.expected, result.observed), ("R$ 150,00", "R$ 175,00"))
+
+    def test_paguei_175_deveria_ser_150_offline_asks_only_input(self) -> None:
+        result = Triage(llm=LLMAdapter()).run(_make_case("Paguei 175 mas deveria ser 150"))
+        self.assertIsInstance(result, NeedsInfo)
+        self.assertEqual(list(result.missing_fields), ["input"])
+
+    def test_markers_ignore_case_and_accents(self) -> None:
+        result = Triage(llm=LLMAdapter()).run(
+            _make_case("Cupom FRETE: O CERTO ERA R$ 150,00, PAGUEI R$ 175,00")
+        )
+        self.assertIsInstance(result, TriageRecord)
+        self.assertEqual((result.expected, result.observed), ("R$ 150,00", "R$ 175,00"))
+
+    def test_cobraram_o_certo_era_correct_llm_is_triaged_and_swapped_llm_needs_info(self) -> None:
+        report = "Comprei um produto com o cupom FRETE: cobraram R$ 175,00 quando o certo era R$ 150,00."
+        good = Triage(llm=LLMAdapter(response_override=_payload("cupom FRETE", "R$ 150,00", "R$ 175,00")))
+        self.assertIsInstance(good.run(_make_case(report)), TriageRecord)
+        swapped = Triage(llm=LLMAdapter(response_override=_payload("cupom FRETE", "R$ 175,00", "R$ 150,00")))
+        result = swapped.run(_make_case(report))
+        self.assertIsInstance(result, NeedsInfo)
+        self.assertEqual(set(result.missing_fields), {"expected", "observed"})
+
+    def test_report_without_any_marker_asks_for_both(self) -> None:
+        result = Triage(llm=LLMAdapter()).run(_make_case("O cupom FRETE nao funcionou direito, 175 e 150."))
+        self.assertIsInstance(result, NeedsInfo)
+        self.assertEqual(set(result.missing_fields), {"expected", "observed"})
+
+
 if __name__ == "__main__":
     unittest.main()

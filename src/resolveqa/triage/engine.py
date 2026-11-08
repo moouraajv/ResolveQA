@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+import unicodedata
 from pathlib import Path, PurePosixPath
 from typing import Any, Optional
 
@@ -109,6 +110,76 @@ def _field_appears_in_report(field_value: str, report_text: str) -> bool:
     return all(w in norm_report for w in words)
 
 
+# Single shared set of role markers (accent/case-insensitive after `_fold`) used by BOTH the offline
+# synthesizer and the swapped-roles check.
+_EXPECTED_MARKERS = (
+    r"esperad[oa]",
+    r"deveria\s+ser",
+    r"deveria\s+dar",
+    r"o\s+certo\s+era",
+    r"o\s+correto\s+era",
+    r"o\s+certo\s+seria",
+    r"o\s+correto\s+seria",
+    r"era\s+para\s+ser",
+    r"seria",
+)
+_OBSERVED_MARKERS = (
+    r"observad[oa]",
+    r"cobrad[oa]",
+    r"cobraram",
+    r"cobrou",
+    r"paguei",
+    r"pago",
+    r"ficou",
+    r"saiu",
+    r"deu",
+    r"total\s+foi",
+    r"valor\s+foi",
+    r"continuou",
+)
+_ROLE_NUMBER = r"(?:r\$\s*)?(\d+(?:[.,]\d+)*)"
+
+
+def _fold(text: str) -> str:
+    """Lowercase and strip accents so markers match 'está'/'esta', 'Cobrança'/'cobranca', etc."""
+    decomposed = unicodedata.normalize("NFKD", text)
+    return "".join(ch for ch in decomposed if not unicodedata.combining(ch)).lower()
+
+
+def _parse_amount(raw: str) -> Optional[float]:
+    token = raw.strip().strip(".,")
+    if not token:
+        return None
+    if "," in token:
+        token = token.replace(".", "").replace(",", ".")
+    elif re.fullmatch(r"\d{1,3}(?:\.\d{3})+", token):
+        token = token.replace(".", "")
+    try:
+        return round(float(token), 4)
+    except ValueError:
+        return None
+
+
+def _role_values(report_text: str, markers: tuple[str, ...]) -> list[float]:
+    pattern = re.compile(
+        r"\b(?:" + "|".join(markers) + r")\b[^0-9]{0,30}" + _ROLE_NUMBER
+    )
+    values: list[float] = []
+    for match in pattern.finditer(_fold(report_text)):
+        amount = _parse_amount(match.group(1))
+        if amount is not None:
+            values.append(amount)
+    return values
+
+
+def _expected_values_in_report(report_text: str) -> list[float]:
+    return _role_values(report_text, _EXPECTED_MARKERS)
+
+
+def _observed_values_in_report(report_text: str) -> list[float]:
+    return _role_values(report_text, _OBSERVED_MARKERS)
+
+
 def _detect_swapped_roles_or_misaligned(
     expected_str: str, observed_str: str, report_text: str
 ) -> bool:
@@ -122,30 +193,16 @@ def _detect_swapped_roles_or_misaligned(
     if abs(exp_val - obs_val) < 1e-4:
         return True
 
-    exp_role_matches = re.findall(
-        r"(?:esperad[oa]|deveria(?:\s+ser)?|era\s+para\s+ser|o\s+correto\s+seria|should\s+be)[^0-9]{0,30}(?:r\$\s*)?(\d+(?:[.,]\d+)?)",
-        report_text,
-        re.IGNORECASE,
-    )
-    obs_role_matches = re.findall(
-        r"(?:observad[oa]|cobrad[oa]|cobrou|ficou(?:\s+em)?|continuou(?:\s+em)?|retornou|veio(?:\s+em)?|foi(?:\s+de)?|was(?:\s+charged)?)[^0-9]{0,30}(?:r\$\s*)?(\d+(?:[.,]\d+)?)",
-        report_text,
-        re.IGNORECASE,
-    )
+    report_expected_nums = _expected_values_in_report(report_text)
+    report_observed_nums = _observed_values_in_report(report_text)
 
-    report_expected_nums: list[float] = []
-    for m in exp_role_matches:
-        report_expected_nums.extend(_extract_numeric_tokens(m))
+    def _in(value: float, pool: list[float]) -> bool:
+        return any(abs(value - rn) < 1e-2 for rn in pool)
 
-    report_observed_nums: list[float] = []
-    for m in obs_role_matches:
-        report_observed_nums.extend(_extract_numeric_tokens(m))
-
-    # If the report explicitly tagged expected number and observed number:
-    if report_expected_nums and any(abs(obs_val - rn) < 1e-2 for rn in report_expected_nums):
+    # Swapped: the LLM's observed is what the report calls expected (and not also observed), or vice versa.
+    if _in(obs_val, report_expected_nums) and not _in(obs_val, report_observed_nums):
         return True
-
-    if report_observed_nums and any(abs(exp_val - rn) < 1e-2 for rn in report_observed_nums):
+    if _in(exp_val, report_observed_nums) and not _in(exp_val, report_expected_nums):
         return True
 
     # Check coupon/discount logic if mentioned:
@@ -202,39 +259,46 @@ def _synthesize_grounded_triage_json(report_text: str) -> str:
                         sort_keys=True,
                     )
 
-    # 49-2: Check for explicit expected vs observed monetary amounts in report without %
-    exp_match = re.search(
-        r"esperad[oa][^0-9]{0,25}(?:R\$\s*)?(\d+(?:[.,]\d{1,2})?)",
-        report_text,
-        re.IGNORECASE,
-    )
-    obs_match = re.search(
-        r"(?:observad[oa]|cobrad[oa]|retornou|continuou(?:\s+em)?|foi(?:\s+de)?)[^0-9]{0,25}(?:R\$\s*)?(\d+(?:[.,]\d{1,2})?)",
-        report_text,
-        re.IGNORECASE,
-    )
-    if exp_match and obs_match:
-        # Check if the report informed an input (coupon code, cart, etc.)
-        coupon_code_match = re.search(r"cupom\s+([A-Za-z0-9_-]+)", report_text, re.IGNORECASE)
+    # 49-2: explicit expected vs observed amounts (shared marker set), with or without '%'
+    exp_values = _expected_values_in_report(report_text)
+    obs_values = _observed_values_in_report(report_text)
+    if exp_values and obs_values:
+        exp_val, obs_val = exp_values[0], obs_values[0]
+        if abs(exp_val - obs_val) <= 1e-2:
+            return json.dumps(
+                {
+                    "status": "needs_info",
+                    "missing_fields": ["expected", "observed"],
+                    "question_to_support": (
+                        "Os valores esperado e observado parecem iguais; você pode esclarecer "
+                        "qual foi o valor esperado e qual foi o valor observado?"
+                    ),
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+            )
+        coupon_code_match = re.search(
+            r"cupom\s+(?!(?:de|do|da|com|que|e)\b)([A-Za-z0-9_-]+)", report_text, re.IGNORECASE
+        )
+        input_text: Optional[str] = None
         if coupon_code_match:
-            exp_val = float(exp_match.group(1).replace(".", "").replace(",", ".") if "," in exp_match.group(1) and "." in exp_match.group(1) else exp_match.group(1).replace(",", "."))
-            obs_val = float(obs_match.group(1).replace(".", "").replace(",", ".") if "," in obs_match.group(1) and "." in obs_match.group(1) else obs_match.group(1).replace(",", "."))
-            if abs(exp_val - obs_val) > 1e-2:
-                exp_brl = _format_brl_str(exp_val)
-                obs_brl = _format_brl_str(obs_val)
-                return json.dumps(
-                    {
-                        "status": "triaged",
-                        "input": f"cupom {coupon_code_match.group(1)}",
-                        "expected": exp_brl,
-                        "observed": obs_brl,
-                        "suspect_files": ["checkout.py"],
-                        "confidence": 0.9,
-                    },
-                    ensure_ascii=False,
-                    sort_keys=True,
-                )
-        # 49-2: If report does not inform input, return needs_info with missing_fields=['input']
+            input_text = f"cupom {coupon_code_match.group(1)}"
+        elif pct_match:
+            input_text = f"cupom de {pct_match.group(1)}%"
+        if input_text is not None:
+            return json.dumps(
+                {
+                    "status": "triaged",
+                    "input": input_text,
+                    "expected": _format_brl_str(exp_val),
+                    "observed": _format_brl_str(obs_val),
+                    "suspect_files": ["checkout.py"],
+                    "confidence": 0.9,
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+            )
+        # 49-2: report does not inform input, so ask only for 'input'
         return json.dumps(
             {
                 "status": "needs_info",
