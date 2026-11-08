@@ -64,14 +64,17 @@ def _request(
                 return status, json.loads(raw)
             return status, raw
     except HTTPError as err:
-        raw = err.read().decode("utf-8")
-        ctype = err.headers.get("Content-Type", "")
-        if "application/json" in ctype:
-            try:
-                return err.code, json.loads(raw)
-            except Exception:
-                return err.code, raw
-        return err.code, raw
+        try:
+            raw = err.read().decode("utf-8")
+            ctype = err.headers.get("Content-Type", "")
+            if "application/json" in ctype:
+                try:
+                    return err.code, json.loads(raw)
+                except Exception:
+                    return err.code, raw
+            return err.code, raw
+        finally:
+            err.close()
 
 
 def run_smoke_tests(base_url: str, origin_secret: str | None = None) -> bool:

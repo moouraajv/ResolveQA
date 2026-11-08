@@ -143,12 +143,20 @@ class BackendPackagingValidationTest(unittest.TestCase):
                     f"{path.name} must not contain a 12-digit AWS account ID",
                 )
                 self.assertIsNone(
+                    re.search(r"arn:aws:[a-z0-9-]+:[a-z0-9-]*:\d{12}:", text),
+                    f"{path.name} must not contain an AWS ARN with an account ID",
+                )
+                self.assertIsNone(
                     re.search(r"--profile\s+[A-Za-z0-9_-]+", text),
                     f"{path.name} must not hardcode a named AWS CLI profile",
                 )
                 self.assertIsNone(
                     re.search(r"/(?:home|Users)/[A-Za-z0-9_.-]+", text),
                     f"{path.name} must not contain local user home paths",
+                )
+                self.assertIsNone(
+                    re.search(r"~/.local", text),
+                    f"{path.name} must not contain local user tool paths",
                 )
                 self.assertIsNone(
                     re.search(r"file:/{3}", text),
@@ -291,7 +299,10 @@ class LocalServerRuntimeAndOriginSecurityTest(unittest.TestCase):
             subprocess.run(["git", "add", "."], cwd=fake_repo, check=True, capture_output=True)
             subprocess.run(["git", "commit", "-m", "init"], cwd=fake_repo, check=True, capture_output=True)
 
-            # Clean build succeeds
+            # Clean build succeeds even if Python created untracked __pycache__/*.pyc
+            pycache_dir = fake_repo / "src" / "__pycache__"
+            pycache_dir.mkdir(parents=True)
+            (pycache_dir / "app.cpython-311.pyc").write_bytes(b"bytecode")
             clean_out = tmp / "clean.tar.gz"
             package_bundle.build_bundle(clean_out, repo_root=fake_repo, reject_dirty=True)
             self.assertTrue(clean_out.is_file())

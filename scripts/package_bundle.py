@@ -50,13 +50,24 @@ def get_git_info(repo_root: Path) -> dict[str, Any]:
 
     try:
         status_res = subprocess.run(
-            ["git", "status", "--porcelain", "src", "scripts"],
+            ["git", "status", "--porcelain", "--untracked-files=all", "src", "scripts"],
             cwd=repo_root,
             capture_output=True,
             text=True,
             check=True,
         )
-        is_dirty = bool(status_res.stdout.strip())
+        dirty_lines = []
+        for raw_line in status_res.stdout.splitlines():
+            if not raw_line.strip():
+                continue
+            path_part = raw_line[3:].strip().strip('"')
+            if raw_line.startswith("?? ") and (
+                "__pycache__/" in path_part
+                or path_part.endswith((".pyc", ".pyo"))
+            ):
+                continue
+            dirty_lines.append(raw_line)
+        is_dirty = bool(dirty_lines)
     except Exception:
         pass
 

@@ -113,7 +113,7 @@ Internet / Usuário
 ## 5. Empacotamento Versionado e Bootstrap com Prontidão
 
 ### 5.1 Eliminação da Dependência do Git Main
-A branch `main` oficial do repositório (`moouraajv/ResolveQA`) é atualmente docs-only (`e8ef46f`), não possuindo o código implementado nem `scripts/run_server.py`. Fazer `git clone main` em UserData causaria falha silenciosa de inicialização.
+A branch `main` oficial do repositório (`moouraajv/ResolveQA`) ainda não integra a superfície HTTP empilhada de Intake/Chat (#13/#14) nem `scripts/run_server.py`. Fazer `git clone main` em UserData dependeria de branch móvel e causaria falha de inicialização.
 
 Em vez disso:
 1. O script [`scripts/package_bundle.py`](../scripts/package_bundle.py) empacota `src/` e `scripts/` de forma determinística (rejeitando working tree dirty por padrão) em `dist/resolveqa-bundle.tar.gz` e calcula seu SHA-256;
