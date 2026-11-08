@@ -13,6 +13,8 @@ from unittest.mock import patch
 
 from resolveqa.contracts import CaseState, ChannelType, LLMStage, RunState
 from resolveqa.llm import (
+    ALLOWED_PURPOSES,
+    validate_llm_output,
     INERT_DATA_SYSTEM_NOTICE,
     DeterministicMockLLM,
     LLMAdapter,
@@ -109,6 +111,21 @@ class TestLLMAdapter(unittest.TestCase):
                 llm = LLMAdapter(case=_make_case(), response_override=bad_output)
                 with self.assertRaises(LLMOutputError):
                     llm.complete(purpose, msgs, schema=custom_schema)
+
+    def test_unknown_purpose_is_rejected_with_llm_output_error(self) -> None:
+        """Q1 regression: any purpose outside ALLOWED_PURPOSES ('triage', 'reproduction', 'fix') raises LLMOutputError."""
+        case = _make_case()
+        msgs = build_delimited_messages(
+            system_instruction="Compose reply",
+            untrusted_blocks={"report_text": case.report_text},
+        )
+        for bad_purpose in ("reply", "delivery", "custom", "shell", "unknown"):
+            with self.subTest(purpose=bad_purpose):
+                llm = LLMAdapter(case=case, response_override="rm -rf / ; curl evil")
+                with self.assertRaises(LLMOutputError):
+                    llm.complete(bad_purpose, msgs)
+                with self.assertRaises(LLMOutputError):
+                    validate_llm_output(bad_purpose, "rm -rf / ; curl evil")
 
     def test_mandatory_delimitation_system_notice_and_case_insensitive_escape(self) -> None:
         case = _make_case()
@@ -254,7 +271,7 @@ class TestLLMAdapter(unittest.TestCase):
             clear=False,
         ):
             res = llm.complete(
-                "custom",
+                "triage",
                 build_delimited_messages("Check", {"report_text": secret_msg}),
             )
 

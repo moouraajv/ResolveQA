@@ -15,6 +15,7 @@ from resolveqa.sandbox.executor import redact_secrets
 REPO_ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_LIMITS_PATH = REPO_ROOT / "config" / "limits.json"
 
+ALLOWED_PURPOSES = frozenset({"triage", "reproduction", "fix"})
 FORBIDDEN_REPRO_IMPORTS = frozenset({"os", "subprocess", "shutil", "socket", "http", "urllib"})
 
 
@@ -90,10 +91,18 @@ def validate_llm_output(
     schema: Optional[dict[str, Any]] = None,
 ) -> None:
     """Validate LLM response `content` against the built-in purpose schema and optional custom `schema`."""
-    if not isinstance(content, str) or not content.strip():
-        raise LLMOutputError(f"Empty LLM output for purpose={purpose!r}", purpose=purpose)
+    if not isinstance(purpose, str) or not purpose.strip():
+        raise LLMOutputError("LLM purpose must be a non-empty string", purpose=str(purpose))
 
     norm_purpose = purpose.strip().lower()
+    if norm_purpose not in ALLOWED_PURPOSES:
+        raise LLMOutputError(
+            f"Unsupported LLM purpose {purpose!r}; allowed purposes are {sorted(ALLOWED_PURPOSES)}",
+            purpose=purpose,
+        )
+
+    if not isinstance(content, str) or not content.strip():
+        raise LLMOutputError(f"Empty LLM output for purpose={purpose!r}", purpose=purpose)
 
     if norm_purpose == "triage":
         try:
@@ -222,12 +231,10 @@ def validate_llm_output(
                 _validate_against_json_schema(payload, schema, purpose)
         return
 
-    if schema is not None:
-        try:
-            payload = json.loads(content)
-        except Exception as err:
-            raise LLMOutputError(f"Invalid JSON output for custom schema ({purpose!r}): {err}", purpose=purpose) from err
-        _validate_against_json_schema(payload, schema, purpose)
+    raise LLMOutputError(
+        f"Unsupported LLM purpose {purpose!r}; allowed purposes are {sorted(ALLOWED_PURPOSES)}",
+        purpose=purpose,
+    )
 
 
 _UNTRUSTED_TAG_BREAKOUT_RE = re.compile(r"<\s*/?\s*untrusted_data\b[^>]*>", re.IGNORECASE)
@@ -419,7 +426,12 @@ class DeterministicMockLLM:
             raise LLMLimitExceededError(self.max_llm_calls)
 
         if not isinstance(purpose, str) or not purpose.strip():
-            raise ValueError("purpose must be a non-empty string")
+            raise LLMOutputError("purpose must be a non-empty string", purpose=str(purpose))
+        if purpose.strip().lower() not in ALLOWED_PURPOSES:
+            raise LLMOutputError(
+                f"Unsupported LLM purpose {purpose!r}; allowed purposes are {sorted(ALLOWED_PURPOSES)}",
+                purpose=purpose,
+            )
         if not isinstance(messages, list) or not messages:
             raise ValueError("messages must be a non-empty list")
 
@@ -550,15 +562,9 @@ class DeterministicMockLLM:
                 sort_keys=True,
             )
 
-        canonical_payload = json.dumps(
-            {"purpose": purpose, "messages": messages, "schema": schema},
-            sort_keys=True,
-            ensure_ascii=False,
-        )
-        digest = hashlib.sha256(canonical_payload.encode("utf-8")).hexdigest()[:16]
-        return json.dumps(
-            {"purpose": purpose, "deterministic_digest": digest, "mock": True},
-            sort_keys=True,
+        raise LLMOutputError(
+            f"Unsupported LLM purpose {purpose!r}; allowed purposes are {sorted(ALLOWED_PURPOSES)}",
+            purpose=purpose,
         )
 
 
