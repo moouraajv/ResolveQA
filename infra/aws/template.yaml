@@ -1,0 +1,205 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  ResolveQA Ephemeral Demo Backend Infrastructure (Single-Process EC2 + CloudFront HTTPS).
+  Packages the Python 3.11 stdlib Intake & Simulated Chat HTTP surface as an intermediate
+  demo runtime. Ephemeral in-memory storage only (resets on restart). Full hackathon agent
+  pipeline (reproduction, automated fix, and PR generation) is not included in this layer.
+
+Parameters:
+  EnvironmentName:
+    Type: String
+    Default: demo
+    Description: Environment name tag (e.g. demo, hackathon, staging)
+
+  InstanceType:
+    Type: String
+    Default: t4g.nano
+    AllowedValues:
+      - t4g.nano
+      - t4g.micro
+      - t3.nano
+      - t3.micro
+    Description: EC2 instance type (t4g.nano/t4g.micro for Graviton ARM64, t3.nano/t3.micro for x86_64)
+
+  AmiId:
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+    Default: /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-arm64
+    Description: SSM Parameter path for latest Amazon Linux 2023 AMI
+
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+    Description: VPC ID for EC2 instance placement (default VPC is supported)
+
+  SubnetId:
+    Type: AWS::EC2::Subnet::Id
+    Description: Public Subnet ID in which the EC2 backend instance will reside
+
+  OriginSecretHeader:
+    Type: String
+    NoEcho: true
+    Default: ResolveQA-Origin-Verify-Secret-Token-2026
+    Description: Shared secret header injected by CloudFront (X-ResolveQA-Origin-Verify) to restrict origin access
+
+Resources:
+  BackendSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for ResolveQA Ephemeral Backend
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 8080
+          ToPort: 8080
+          CidrIp: 0.0.0.0/0
+          Description: Allow HTTP traffic on port 8080 from CloudFront origin
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          CidrIp: 0.0.0.0/0
+          Description: Allow outbound traffic for package updates and repository clone
+      Tags:
+        - Key: Name
+          Value: !Sub resolveqa-backend-sg-${EnvironmentName}
+        - Key: Project
+          Value: ResolveQA
+        - Key: EphemeralDemo
+          Value: "true"
+
+  BackendInstance:
+    Type: AWS::EC2::Instance
+    Properties:
+      InstanceType: !Ref InstanceType
+      ImageId: !Ref AmiId
+      SubnetId: !Ref SubnetId
+      SecurityGroupIds:
+        - !Ref BackendSecurityGroup
+      Tags:
+        - Key: Name
+          Value: !Sub resolveqa-backend-${EnvironmentName}
+        - Key: Project
+          Value: ResolveQA
+        - Key: Runtime
+          Value: python3.11-ephemeral-single-process
+        - Key: HackathonScope
+          Value: intermediate-intake-chat-only
+      UserData:
+        Fn::Base64:
+          !Sub |
+            #!/bin/bash
+            set -euo pipefail
+
+            exec > >(tee /var/log/resolveqa-userdata.log|logger -t resolveqa-userdata -s 2>/dev/console) 2>&1
+            echo "[ResolveQA] Bootstrapping ResolveQA Ephemeral Backend..."
+
+            dnf update -y
+            dnf install -y python3.11 git
+
+            mkdir -p /opt/resolveqa
+            if [ ! -d "/opt/resolveqa/.git" ]; then
+              git clone https://github.com/moouraajv/ResolveQA.git /opt/resolveqa
+            fi
+            cd /opt/resolveqa
+
+            useradd -r -s /sbin/nologin resolveqa || true
+            chown -R resolveqa:resolveqa /opt/resolveqa
+
+            cat << 'EOF' > /etc/systemd/system/resolveqa-backend.service
+            [Unit]
+            Description=ResolveQA Ephemeral Demo Backend Service
+            Documentation=https://github.com/moouraajv/ResolveQA
+            After=network.target
+
+            [Service]
+            Type=simple
+            User=resolveqa
+            Group=resolveqa
+            WorkingDirectory=/opt/resolveqa
+            Environment=PYTHONPATH=/opt/resolveqa/src
+            Environment=RESOLVEQA_HOST=0.0.0.0
+            Environment=RESOLVEQA_PORT=8080
+            Environment=PYTHONDONTWRITEBYTECODE=1
+            Environment=PYTHONUNBUFFERED=1
+            ExecStart=/usr/bin/python3.11 scripts/run_server.py --host 0.0.0.0 --port 8080
+            Restart=on-failure
+            RestartSec=5
+            LimitNOFILE=65536
+
+            [Install]
+            WantedBy=multi-user.target
+            EOF
+
+            systemctl daemon-reload
+            systemctl enable resolveqa-backend
+            systemctl start resolveqa-backend
+
+            echo "[ResolveQA] Service started successfully."
+
+  CloudFrontDistribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Enabled: true
+        Comment: ResolveQA Ephemeral Demo Backend CDN (HTTPS entry point)
+        Origins:
+          - Id: ResolveQABackendOrigin
+            DomainName: !GetAtt BackendInstance.PublicDnsName
+            CustomOriginConfig:
+              HTTPPort: 8080
+              HTTPSPort: 443
+              OriginProtocolPolicy: http-only
+              OriginKeepaliveTimeout: 30
+              OriginReadTimeout: 30
+            OriginCustomHeaders:
+              - HeaderName: X-ResolveQA-Origin-Verify
+                HeaderValue: !Ref OriginSecretHeader
+        DefaultCacheBehavior:
+          TargetOriginId: ResolveQABackendOrigin
+          ViewerProtocolPolicy: redirect-to-https
+          AllowedMethods:
+            - DELETE
+            - GET
+            - HEAD
+            - OPTIONS
+            - PATCH
+            - POST
+            - PUT
+          CachedMethods:
+            - GET
+            - HEAD
+          CachePolicyId: 4135ea2d-6df8-44a3-9df3-44184ec0b026
+          OriginRequestPolicyId: 216adef6-5c7f-47e4-b989-5492eafa07d3
+        HttpVersion: http2and3
+        PriceClass: PriceClass_100
+      Tags:
+        - Key: Project
+          Value: ResolveQA
+        - Key: Environment
+          Value: !Ref EnvironmentName
+
+Outputs:
+  CloudFrontDomainName:
+    Description: CloudFront distribution domain name (HTTPS entry point)
+    Value: !GetAtt CloudFrontDistribution.DomainName
+
+  CloudFrontBaseUrl:
+    Description: Public HTTPS base URL for ResolveQA backend
+    Value: !Sub https://${CloudFrontDistribution.DomainName}
+
+  HealthEndpoint:
+    Description: Health check endpoint
+    Value: !Sub https://${CloudFrontDistribution.DomainName}/health
+
+  FormEndpoint:
+    Description: Intake web form endpoint
+    Value: !Sub https://${CloudFrontDistribution.DomainName}/form
+
+  ChatEndpoint:
+    Description: Simulated chat endpoint
+    Value: !Sub https://${CloudFrontDistribution.DomainName}/chat
+
+  InstancePublicIp:
+    Description: Public IP address of backend EC2 instance
+    Value: !GetAtt BackendInstance.PublicIp
+
+  EphemeralStorageNotice:
+    Description: Storage notice and hackathon scope limit
+    Value: Storage is strictly ephemeral in-memory. State resets on reboot. Full agent reproduction/PR pipeline not included.
