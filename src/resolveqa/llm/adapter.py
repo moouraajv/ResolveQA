@@ -14,7 +14,7 @@ from typing import Any, Callable, Optional
 
 from resolveqa.contracts import Attempts, LLMResult, RunState
 
-from .config import DEFAULT_LLM_CONFIG_PATH, LLMConfig, load_llm_config
+from .config import ALLOWED_FEATHERLESS_HOST, DEFAULT_LLM_CONFIG_PATH, LLMConfig, load_llm_config, validate_featherless_endpoint
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_LIMITS_PATH = REPO_ROOT / "config" / "limits.json"
@@ -876,6 +876,7 @@ class DeterministicMockLLM:
         api_key: str,
     ) -> LLMResult:
         """Call Featherless primary model (with 1 retry on network/429/503), falling back to backup model on error or invalid output."""
+        validated_endpoint = validate_featherless_endpoint(self.config.endpoint)
         transport_fn = self.transport if self.transport is not None else default_featherless_transport
         outbound_messages = self._build_outbound_messages(purpose, messages)
         models_to_try = (self.config.primary_model, self.config.fallback_model)
@@ -897,7 +898,7 @@ class DeterministicMockLLM:
                 }
                 try:
                     resp_data = transport_fn(
-                        self.config.endpoint,
+                        validated_endpoint,
                         headers,
                         body_bytes,
                         self.timeout_s,

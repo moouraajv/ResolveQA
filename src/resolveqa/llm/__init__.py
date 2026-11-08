@@ -20,12 +20,14 @@ from .adapter import (
     redact_secrets,
     validate_llm_output,
 )
-from .config import DEFAULT_LLM_CONFIG_PATH, LLMConfig, load_llm_config
+from .config import ALLOWED_FEATHERLESS_HOST, DEFAULT_LLM_CONFIG_PATH, LLMConfig, load_llm_config, validate_featherless_endpoint
 
 __all__ = [
     "ALLOWED_PURPOSES",
     "DEFAULT_LIMITS_PATH",
+    "ALLOWED_FEATHERLESS_HOST",
     "DEFAULT_LLM_CONFIG_PATH",
+    "validate_featherless_endpoint",
     "DeterministicMockLLM",
     "FeatherlessHTTPError",
     "INERT_DATA_SYSTEM_NOTICE",
