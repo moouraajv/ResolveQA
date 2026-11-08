@@ -106,3 +106,20 @@ independem das etapas pendentes:
 ```sh
 .venv/bin/python -B -m pytest tests/e2e/test_customer_artifacts.py
 ```
+
+### Vínculo dos valores com a verificação (QA do #66)
+
+O comprovante exige exatamente um `triage_record` no manifesto. O resumo textual
+para Delivery é registrado como `report`, sem criar outro registro de triagem.
+“Antes” e “Agora” vêm da comparação numérica `AssertionError: observado != esperado`
+do `ReproResult` do teste controlado. Essa asserção precisa aparecer no log RED do
+Verdict; os comandos antes/depois devem executar o mesmo caminho de teste, e a
+fonte referenciada pela reprodução precisa corresponder ao SHA-256 da evidência do
+teste. O GREEN do mesmo teste protegido confirma o valor esperado. A geração
+recusa valores divergentes da triagem, fonte divergente e formatos de asserção não
+reconhecidos, em vez de usar a triagem como prova do resultado.
+
+A página e o comprovante são rotulados como demonstração quando o modo é mock **ou**
+qualquer evidência do manifesto tem `simulated=True`. O próprio comprovante informa:
+“Código de conferência de integridade (não é assinatura digital)”. Horários
+inválidos no formatador geram `CustomerArtifactError`.

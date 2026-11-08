@@ -3,15 +3,17 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
+from decimal import Decimal
 import hashlib
 from html import escape
 import json
 from pathlib import Path
 import re
+import shlex
 
 from resolveqa.contracts import (
     CaseState, ContractValidationError, EventSource, EventType, Evidence, EvidenceKind, RunState, Verdict,
-    VerdictResult, TERMINAL_STATES,
+    ReproOutcome, ReproResult, VerdictResult, TERMINAL_STATES,
 )
 from resolveqa.store import EventStore
 
@@ -50,7 +52,10 @@ def _read_json(path):
 
 
 def _time(ts):
-    return datetime.fromisoformat(ts.replace('Z', '+00:00')).strftime('%d/%m/%Y às %H:%M:%S UTC')
+    try:
+        return datetime.fromisoformat(ts.replace('Z', '+00:00')).strftime('%d/%m/%Y às %H:%M:%S UTC')
+    except (ValueError, TypeError, AttributeError, OverflowError):
+        raise CustomerArtifactError('Horário do evento inválido') from None
 
 
 def _amount(value):
@@ -95,7 +100,7 @@ def _evidence(run_dir, case, events):
     return descriptors, payloads
 
 
-def _verified_facts(case, events, payloads):
+def _verified_facts(case, events, payloads, run_dir):
     approved = [event for event in events if event.type == EventType.STATE_CHANGED
                 and event.to_state == CaseState.VERIFIED
                 and event.source == EventSource.VERIFICATION]
@@ -114,11 +119,60 @@ def _verified_facts(case, events, payloads):
             or verdict.suite.exit_code != 0 or not verdict.base_revision
             or not verdict.fix_revision or verdict.base_revision == verdict.fix_revision):
         raise CustomerArtifactError('Evidências insuficientes para comprovar a correção')
-    records = [data for item, data in payloads if item.kind == EvidenceKind.TRIAGE_RECORD
-               and isinstance(data, dict) and 'expected' in data and 'observed' in data]
-    if not records:
-        raise CustomerArtifactError('Valores de antes e depois indisponíveis')
-    return approved[-1], _amount(records[-1]['observed']), _amount(records[-1]['expected'])
+    records = [data for item, data in payloads if item.kind == EvidenceKind.TRIAGE_RECORD]
+    if len(records) != 1 or not isinstance(records[0], dict):
+        raise CustomerArtifactError('É necessário um único registro de triagem por caso')
+    record = records[0]
+    try:
+        triage_before = Decimal(_amount(record['observed'])[3:].replace('.', '').replace(',', '.'))
+        triage_after = Decimal(_amount(record['expected'])[3:].replace('.', '').replace(',', '.'))
+    except KeyError:
+        raise CustomerArtifactError('Valores de triagem indisponíveis') from None
+    repros = [data for item, data in payloads if item.kind == EvidenceKind.EXIT_CODE
+              and isinstance(data, dict) and 'test_path' in data]
+    if len(repros) != 1:
+        raise CustomerArtifactError('Reprodução verificada ausente ou ambígua')
+    try:
+        repro = ReproResult.from_dict(repros[0])
+        before_command = shlex.split(verdict.before.command)
+        after_command = shlex.split(verdict.after.command)
+    except (ContractValidationError, ValueError):
+        raise CustomerArtifactError('Referência da reprodução inválida') from None
+    if (repro.outcome != ReproOutcome.RED_ON_ASSERTION or repro.exit_code == 0
+            or not repro.failing_assertion or repro.failing_assertion not in verdict.before.log_ref
+            or before_command != after_command
+            or not any(token.split('::', 1)[0] == repro.test_path for token in before_command)):
+        raise CustomerArtifactError('Reprodução diverge do teste executado pelo verificador')
+    sources = [item for item, _ in payloads if item.kind == EvidenceKind.TEST_SOURCE]
+    source_path = run_dir / repro.test_source_ref
+    if (len(sources) != 1 or source_path.is_symlink()
+            or not source_path.resolve().is_relative_to(run_dir)):
+        raise CustomerArtifactError('Fonte do teste verificado ausente ou ambígua')
+    try:
+        source_sha = hashlib.sha256(source_path.read_bytes()).hexdigest()
+    except OSError:
+        raise CustomerArtifactError('Fonte do teste verificado indisponível') from None
+    if source_sha != sources[0].sha256:
+        raise CustomerArtifactError('Fonte da reprodução diverge da evidência do teste')
+    # The MVP verifier reruns this same protected unittest before and after.
+    # Read the observed/expected pair from its failed comparison, never from triage.
+    comparison = re.match(
+        r'AssertionError:\s*(\d{1,15}(?:\.\d+)?)\s*!=\s*(\d{1,15}(?:\.\d+)?)(?=\s|$)',
+        repro.failing_assertion,
+    )
+    if comparison is None:
+        raise CustomerArtifactError('Valores da asserção verificada indisponíveis')
+    measured_before, measured_after = map(Decimal, comparison.groups())
+    if (measured_before != measured_before.quantize(Decimal('0.01'))
+            or measured_after != measured_after.quantize(Decimal('0.01'))):
+        raise CustomerArtifactError('Precisão monetária da asserção inválida')
+    if (triage_before, triage_after) != (measured_before, measured_after):
+        raise CustomerArtifactError('Valores da triagem divergem da reprodução verificada')
+
+    def format_brl(value):
+        return 'R$ ' + f'{value:,.2f}'.replace(',', '_').replace('.', ',').replace('_', '.')
+
+    return approved[-1], format_brl(measured_before), format_brl(measured_after)
 
 
 def _code(case_id, verified_at, descriptors):
@@ -141,7 +195,7 @@ def _receipt(case, approval, before, after, code, *, mock):
         'O que estava errado:', f'O total mostrado era diferente do valor esperado de {after}.', '',
         'O que ficou certo:', f'Antes: {before}. Agora: {after}.',
         'O total foi corrigido e o resultado foi conferido.', '',
-        f'Código de verificação: {code}', '',
+        f'Código de conferência de integridade (não é assinatura digital): {code}', '',
     ))
 
 
@@ -249,12 +303,13 @@ def generate_customer_artifacts(run_dir: Path | str) -> CustomerArtifacts:
     if previous != case.state:
         raise CustomerArtifactError('Estado do caso não corresponde aos eventos')
     descriptors, payloads = _evidence(run_dir, case, events)
+    mock = result['mode'] == 'mock' or any(item.simulated for item in descriptors)
     receipt = code = before = after = None
     receipt_path = None
     if case.state == CaseState.VERIFIED:
-        approval, before, after = _verified_facts(case, events, payloads)
+        approval, before, after = _verified_facts(case, events, payloads, run_dir)
         code = _code(case.case_id, approval.ts, descriptors)
-        receipt = _receipt(case, approval, before, after, code, mock=result['mode'] == 'mock')
+        receipt = _receipt(case, approval, before, after, code, mock=mock)
         receipt_path = run_dir / 'comprovante.txt'
     tracking_path = run_dir / 'acompanhamento.html'
     for path in (tracking_path, run_dir / 'comprovante.txt'):
@@ -262,7 +317,7 @@ def generate_customer_artifacts(run_dir: Path | str) -> CustomerArtifacts:
             raise CustomerArtifactError('Destino de documento inválido')
     if receipt is None and (run_dir / 'comprovante.txt').exists():
         raise CustomerArtifactError('Comprovante existente sem aprovação atual')
-    page = _page(case, steps, mock=result['mode'] == 'mock', receipt=receipt, before=before, after=after)
+    page = _page(case, steps, mock=mock, receipt=receipt, before=before, after=after)
     tracking_path.write_text(page, encoding='utf-8')
     if receipt_path is not None:
         receipt_path.write_text(receipt, encoding='utf-8')

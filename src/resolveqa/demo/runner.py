@@ -178,7 +178,7 @@ def run_demo(scenario='coupon', *, root=ROOT, llm=None, real=False):
         cause = (f'Esperado: {record.expected}; observado: {record.observed}. '
                  f'Arquivos suspeitos: {", ".join(record.suspect_files)}. '
                  f'Correção proposta no diff; aprovação independente: {verdict.result.value}.')
-        save(EvidenceKind.TRIAGE_RECORD, cause, EventSource.DELIVERY, 'txt', 'cause')
+        save(EvidenceKind.REPORT, cause, EventSource.DELIVERY, 'txt', 'cause')
         save(EvidenceKind.VERDICT, 'total agora R$ 180,00', EventSource.DELIVERY,
              'txt', 'corrected_behavior')
         final = replace(final, evidence_ids=tuple(ids))

@@ -40,15 +40,24 @@ def recorded_case(tmp_path):
             ('triage', EvidenceKind.TRIAGE_RECORD, {'input': 'subtotal=200', 'expected': 'R$ 180,00',
              'observed': 'R$ 200,00', 'suspect_files': ['checkout.py'], 'confidence': .95}),
             ('verdict', EvidenceKind.VERDICT, {
-                'before': {'command': 'pytest checkout.py', 'exit_code': 1, 'duration_s': .1, 'log_ref': 'AssertionError private-secret'},
-                'after': {'command': 'pytest checkout.py', 'exit_code': 0, 'duration_s': .1, 'log_ref': '1 passed'},
+                'before': {'command': 'python3 -m pytest -v tests/test_repro_generated.py', 'exit_code': 1, 'duration_s': .1, 'log_ref': 'AssertionError: 200.0 != 180.0 private-secret'},
+                'after': {'command': 'python3 -m pytest -v tests/test_repro_generated.py', 'exit_code': 0, 'duration_s': .1, 'log_ref': '1 passed'},
                 'suite': {'command': 'pytest', 'exit_code': 0, 'duration_s': .1, 'log_ref': '5 passed'},
                 'base_revision': 'before-revision', 'fix_revision': 'after-revision',
                 'result': 'verified', 'reasons': [],
             }),
+            ('source', EvidenceKind.TEST_SOURCE, 'def test_coupon():\n    assert 200.0 == 180.0\n'),
+            ('repro', EvidenceKind.EXIT_CODE, {
+                'test_path': 'tests/test_repro_generated.py',
+                'test_source_ref': 'evidence/source.py', 'exit_code': 1,
+                'outcome': 'red_on_assertion',
+                'failing_assertion': 'AssertionError: 200.0 != 180.0',
+                'log_ref': 'evidence/before.log',
+            }),
         ]:
-            content = json.dumps(data).encode()
-            path = f'evidence/{identifier}.json'
+            content = (data if isinstance(data, str) else json.dumps(data)).encode()
+            suffix = 'py' if kind == EvidenceKind.TEST_SOURCE else 'json'
+            path = f'evidence/{identifier}.{suffix}'
             (run / path).write_bytes(content)
             descriptors.append(Evidence(
                 identifier, case_id, kind, path, hashlib.sha256(content).hexdigest(),
@@ -83,6 +92,7 @@ def test_receipt_and_tracking_use_only_safe_recorded_facts(recorded_case):
     assert 'case-customer-proof' in receipt
     assert '08/11/2026' in receipt
     assert artifacts.verification_code in receipt
+    assert 'Código de conferência de integridade (não é assinatura digital)' in receipt
     assert artifacts.verification_code in html
     assert 'demonstração com dados simulados' in html
     for forbidden in ('checkout.py', 'assert False', 'private-secret', 'private-repository',
@@ -198,3 +208,77 @@ def test_in_progress_page_never_invents_future_steps(recorded_case):
     assert 'data-stage="verificando"' not in html
     assert 'data-stage="pronto"' not in html
     assert artifacts.receipt_path is None
+
+
+def _rewrite_evidence(run, identifier, update):
+    manifest_path = run / 'evidence-manifest.json'
+    manifest = json.loads(manifest_path.read_text())
+    item = next(item for item in manifest if item['evidence_id'] == identifier)
+    path = run / item['path']
+    payload = json.loads(path.read_text())
+    update(payload)
+    path.write_text(json.dumps(payload))
+    item['sha256'] = hashlib.sha256(path.read_bytes()).hexdigest()
+    manifest_path.write_text(json.dumps(manifest))
+
+
+def test_nivel_a1_changed_triage_expected_with_valid_hash_is_refused(recorded_case):
+    run, _ = recorded_case()
+    _rewrite_evidence(run, 'triage', lambda data: data.update(expected='R$ 1,00'))
+    with pytest.raises(CustomerArtifactError, match='divergem'):
+        generate_customer_artifacts(run)
+    assert not (run / 'comprovante.txt').exists()
+    assert not (run / 'acompanhamento.html').exists()
+
+
+def test_observed_must_also_match_verified_assertion(recorded_case):
+    run, _ = recorded_case()
+    _rewrite_evidence(run, 'triage', lambda data: data.update(observed='R$ 1,00'))
+    with pytest.raises(CustomerArtifactError, match='divergem'):
+        generate_customer_artifacts(run)
+
+
+def test_duplicate_triage_records_are_refused(recorded_case):
+    run, _ = recorded_case()
+    manifest_path = run / 'evidence-manifest.json'
+    manifest = json.loads(manifest_path.read_text())
+    duplicate = dict(manifest[0], evidence_id='triage-second', path='evidence/triage-second.json')
+    (run / duplicate['path']).write_bytes((run / manifest[0]['path']).read_bytes())
+    manifest.append(duplicate)
+    manifest_path.write_text(json.dumps(manifest))
+    with pytest.raises(CustomerArtifactError, match='único'):
+        generate_customer_artifacts(run)
+
+
+@pytest.mark.parametrize('change', [
+    {'failing_assertion': 'AssertionError: 200.0 != 1.0'},
+    {'test_path': 'tests/another_test.py'},
+])
+def test_reproduction_must_match_the_test_and_assertion_in_verdict(recorded_case, change):
+    run, _ = recorded_case()
+    _rewrite_evidence(run, 'repro', lambda data: data.update(change))
+    with pytest.raises(CustomerArtifactError):
+        generate_customer_artifacts(run)
+
+
+@pytest.mark.parametrize('states', [
+    ('triaging', 'triaged', 'reproducing', 'reproduced', 'fixing', 'fixed', 'verifying', 'verified'),
+    ('triaging', 'needs_info'),
+])
+def test_any_simulated_evidence_labels_a_real_mode_case(recorded_case, states):
+    run, _ = recorded_case(states, mock=False)
+    manifest_path = run / 'evidence-manifest.json'
+    manifest = json.loads(manifest_path.read_text())
+    manifest[0]['simulated'] = True
+    manifest_path.write_text(json.dumps(manifest))
+    artifacts = generate_customer_artifacts(run)
+    assert 'demonstração com dados simulados' in artifacts.tracking_path.read_text()
+    if artifacts.receipt_path is not None:
+        assert 'demonstração com dados simulados' in artifacts.receipt_path.read_text()
+
+
+@pytest.mark.parametrize('timestamp', ['not-a-date', '2026-99-99T11:00:00Z', None])
+def test_invalid_timestamp_has_customer_error(timestamp):
+    from resolveqa.demo.customer import _time
+    with pytest.raises(CustomerArtifactError):
+        _time(timestamp)
