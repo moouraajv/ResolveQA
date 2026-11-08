@@ -5,6 +5,9 @@ Routes (ephemeral / local-demo; no auth, no cloud):
   GET  /form                   -> HTML form (report fields treated as data)
   POST /api/cases              -> JSON create {client_id, repo_ref, report_text} channel=api
   GET  /api/cases/<case_id>    -> JSON fetch by id
+  GET  /api/cases/<case_id>/timeline -> JSON timeline from runs/<case_id>/events.jsonl (#15)
+  GET  /cases/<case_id>/timeline     -> HTML timeline for support (#15)
+  POST /api/cases/<case_id>/reply    -> JSON customer reply compose (#17)
   POST /form/cases             -> application/x-www-form-urlencoded create channel=form
   GET  /chat                   -> simulated messaging UI (permanent "Canal simulado" label)
   POST /chat/messages          -> form create via Intake channel=simulated_chat
@@ -12,6 +15,7 @@ Routes (ephemeral / local-demo; no auth, no cloud):
 
 Missing or blank client_id is refused with HTTP 400 and a clear error message.
 API/form behavior from issue #13 is preserved; chat reuses the same Intake instance.
+Timeline/reply never invent pipeline progress; they only reflect stored events / terminal state.
 """
 
 from __future__ import annotations
@@ -21,14 +25,28 @@ import json
 import re
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from typing import Any, Optional
 from urllib.parse import parse_qs
 
 from resolveqa.channel import build_chat_html, submit_simulated_chat_report
-from resolveqa.contracts import ChannelType, ContractValidationError, ReportInput, RunState
+from resolveqa.contracts import (
+    CaseState,
+    ChannelType,
+    ContractValidationError,
+    Event,
+    ReportInput,
+    RunState,
+)
 from resolveqa.intake import Intake
+from resolveqa.reply import ReplyComposeError, ReplyComposer, ReplyOutcome
+from resolveqa.timeline import TimelineError, build_timeline_html, load_timeline, timeline_to_dict
 
 _CASE_ID_RE = re.compile(r"^/api/cases/([^/]+)$")
+_CASE_TIMELINE_API_RE = re.compile(r"^/api/cases/([^/]+)/timeline$")
+_CASE_TIMELINE_HTML_RE = re.compile(r"^/cases/([^/]+)/timeline$")
+_CASE_REPLY_API_RE = re.compile(r"^/api/cases/([^/]+)/reply$")
+_DEFAULT_RUNS_ROOT = Path("runs")
 
 
 def _json_bytes(payload: Any, *, status: int = HTTPStatus.OK) -> tuple[int, bytes, str]:
@@ -151,6 +169,16 @@ class IntakeRequestHandler(BaseHTTPRequestHandler):
             self._write(HTTPStatus.OK, page, "text/html; charset=utf-8")
             return
 
+        timeline_api = _CASE_TIMELINE_API_RE.match(path)
+        if timeline_api:
+            self._handle_timeline_api(timeline_api.group(1))
+            return
+
+        timeline_html = _CASE_TIMELINE_HTML_RE.match(path)
+        if timeline_html:
+            self._handle_timeline_html(timeline_html.group(1))
+            return
+
         match = _CASE_ID_RE.match(path)
         if match:
             case_id = match.group(1)
@@ -193,7 +221,117 @@ class IntakeRequestHandler(BaseHTTPRequestHandler):
             self._handle_chat_form_create(raw)
             return
 
+        reply_api = _CASE_REPLY_API_RE.match(path)
+        if reply_api:
+            self._handle_reply_api(reply_api.group(1), raw)
+            return
+
         status, body, ctype = _error("not found", HTTPStatus.NOT_FOUND)
+        self._write(status, body, ctype)
+
+    def _handle_timeline_api(self, case_id: str) -> None:
+        try:
+            entries = load_timeline(self.server.runs_root, case_id)
+        except TimelineError as err:
+            status, body, ctype = _error(str(err))
+            self._write(status, body, ctype)
+            return
+        status, body, ctype = _json_bytes(timeline_to_dict(case_id, entries))
+        self._write(status, body, ctype)
+
+    def _handle_timeline_html(self, case_id: str) -> None:
+        try:
+            entries = load_timeline(self.server.runs_root, case_id)
+        except TimelineError as err:
+            page = (
+                "<!DOCTYPE html><html lang=\"pt-BR\"><body>"
+                f"<p>{html.escape(str(err), quote=False)}</p>"
+                "</body></html>"
+            ).encode("utf-8")
+            self._write(HTTPStatus.BAD_REQUEST, page, "text/html; charset=utf-8")
+            return
+        page = build_timeline_html(case_id, entries).encode("utf-8")
+        self._write(HTTPStatus.OK, page, "text/html; charset=utf-8")
+
+    def _load_case_events(self, case_id: str) -> list[Event]:
+        path = Path(self.server.runs_root) / case_id / "events.jsonl"
+        if not path.exists():
+            return []
+        events: list[Event] = []
+        with path.open("r", encoding="utf-8") as handle:
+            for raw in handle:
+                line = raw.strip()
+                if line:
+                    events.append(Event.from_json(line))
+        return events
+
+    def _handle_reply_api(self, case_id: str, raw: bytes) -> None:
+        case = self.intake.get(case_id)
+        if case is None:
+            status, body, ctype = _error(f"case_id not found: {case_id}", HTTPStatus.NOT_FOUND)
+            self._write(status, body, ctype)
+            return
+
+        payload: dict[str, Any] = {}
+        if raw:
+            try:
+                parsed = json.loads(raw.decode("utf-8"))
+            except (UnicodeDecodeError, json.JSONDecodeError):
+                status, body, ctype = _error("invalid JSON body")
+                self._write(status, body, ctype)
+                return
+            if not isinstance(parsed, dict):
+                status, body, ctype = _error("JSON body must be an object")
+                self._write(status, body, ctype)
+                return
+            payload = parsed
+
+        # Optional override for demo fixtures that already reached a terminal state on disk.
+        state_override = payload.get("state")
+        if isinstance(state_override, str) and state_override.strip():
+            try:
+                case = RunState(
+                    case_id=case.case_id,
+                    client_id=case.client_id,
+                    repo_ref=case.repo_ref,
+                    channel=case.channel,
+                    report_text=case.report_text,
+                    state=CaseState(state_override),
+                    created_at=case.created_at,
+                    updated_at=case.updated_at,
+                    terminal_reason=case.terminal_reason,
+                    attempts=case.attempts,
+                    base_revision=case.base_revision,
+                    fix_revision=case.fix_revision,
+                    evidence_ids=case.evidence_ids,
+                )
+            except (ValueError, ContractValidationError) as err:
+                status, body, ctype = _error(str(err))
+                self._write(status, body, ctype)
+                return
+
+        outcome = ReplyOutcome(
+            corrected_behavior=payload.get("corrected_behavior"),
+            support_question=payload.get("support_question"),
+            blocked_detail=payload.get("blocked_detail"),
+        )
+        try:
+            message = self.server.reply_composer.compose(
+                case,
+                outcome,
+                events=self._load_case_events(case_id),
+            )
+        except ReplyComposeError as err:
+            status, body, ctype = _error(str(err))
+            self._write(status, body, ctype)
+            return
+
+        status, body, ctype = _json_bytes(
+            {
+                "message": message.to_dict(),
+                "note": "Mensagem composta apenas após regras RF-09; não inventa progresso.",
+            }
+        )
         self._write(status, body, ctype)
 
     def _handle_api_create(self, raw: bytes) -> None:
@@ -385,8 +523,17 @@ class IntakeHTTPServer(ThreadingHTTPServer):
 
     allow_reuse_address = True
 
-    def __init__(self, server_address: tuple[str, int], intake: Intake | None = None) -> None:
+    def __init__(
+        self,
+        server_address: tuple[str, int],
+        intake: Intake | None = None,
+        *,
+        runs_root: Path | str | None = None,
+        reply_composer: ReplyComposer | None = None,
+    ) -> None:
         self.intake = intake if intake is not None else Intake()
+        self.runs_root = Path(runs_root) if runs_root is not None else _DEFAULT_RUNS_ROOT
+        self.reply_composer = reply_composer if reply_composer is not None else ReplyComposer()
         super().__init__(server_address, IntakeRequestHandler)
 
 
