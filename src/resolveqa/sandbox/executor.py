@@ -87,16 +87,14 @@ def _make_exec_result(
     stdout_ref: str,
     stderr_ref: str,
     timed_out: bool,
-    truncated: bool = False,
 ) -> ExecResult:
-    """Create an `ExecResult` and attach the `truncated` flag without altering frozen contracts."""
+    """Create the immutable contract result; truncation stays on LocalSandbox."""
     res = ExecResult(
         exit_code=exit_code,
         stdout_ref=stdout_ref,
         stderr_ref=stderr_ref,
         timed_out=timed_out,
     )
-    res.truncated = bool(truncated)  # type: ignore[attr-defined]
     return res
 
 
@@ -232,15 +230,15 @@ class LocalSandbox:
             raise ValueError("timeout_s must be positive")
 
         if not isinstance(command, str) or not command.strip():
-            return _make_exec_result(2, "", "Invalid empty command", False, False)
+            return _make_exec_result(2, "", "Invalid empty command", False)
 
         try:
             argv = shlex.split(command)
         except ValueError as err:
-            return _make_exec_result(2, "", redact_secrets(f"Invalid command syntax: {err}"), False, False)
+            return _make_exec_result(2, "", redact_secrets(f"Invalid command syntax: {err}"), False)
 
         if not argv:
-            return _make_exec_result(2, "", "Empty command argument list", False, False)
+            return _make_exec_result(2, "", "Empty command argument list", False)
 
         if argv[0] in {"python", "python3"}:
             argv[0] = sys.executable
@@ -261,7 +259,7 @@ class LocalSandbox:
                             start_new_session=True,
                         )
                     except OSError as exc:
-                        return _make_exec_result(127, "", redact_secrets(str(exc)), False, False)
+                        return _make_exec_result(127, "", redact_secrets(str(exc)), False)
 
                     timed_out = False
                     try:
@@ -284,17 +282,15 @@ class LocalSandbox:
                             stdout_ref=redact_secrets(raw_out),
                             stderr_ref=redact_secrets(raw_err or f"Command timed out after {effective_timeout}s"),
                             timed_out=True,
-                            truncated=truncated,
                         )
                     return _make_exec_result(
                         exit_code=int(proc.returncode if proc.returncode is not None else 1),
                         stdout_ref=redact_secrets(raw_out),
                         stderr_ref=redact_secrets(raw_err),
                         timed_out=False,
-                        truncated=truncated,
                     )
         except Exception as err:
-            return _make_exec_result(2, "", redact_secrets(str(err)), False, False)
+            return _make_exec_result(2, "", redact_secrets(str(err)), False)
 
 
 Sandbox = LocalSandbox
