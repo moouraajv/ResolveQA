@@ -20,7 +20,13 @@ from resolveqa.contracts import (
     LLMStage,
     RunState,
 )
+import http.server
+import socket
+import threading
 from resolveqa.llm import (
+    ALLOWED_FEATHERLESS_HOST,
+    default_featherless_transport,
+    validate_featherless_endpoint,
     ALLOWED_PURPOSES,
     INERT_DATA_SYSTEM_NOTICE,
     PURPOSE_PROMPT_GUIDELINES,
@@ -517,6 +523,294 @@ class TestLLMAdapter(unittest.TestCase):
         self.assertEqual(vague_data["status"], "needs_info")
         self.assertIn("reproduction", vague_data)
         self.assertIsNone(vague_data["reproduction"])
+
+    def test_local_server_redirect_301_302_303_is_refused_and_never_forwards_authorization(self) -> None:
+        """A1 regression: 3xx redirects are refused by _NoRedirectHandler, treated as non-retryable, and never leak Authorization to Location."""
+        received_on_b: list[dict[str, Any]] = []
+
+        class _TargetBHandler(http.server.BaseHTTPRequestHandler):
+            def do_POST(self) -> None:
+                received_on_b.append({"path": self.path, "auth": self.headers.get("Authorization")})
+                self.send_response(200)
+                self.end_headers()
+                self.wfile.write(b"{}")
+
+            def do_GET(self) -> None:
+                received_on_b.append({"path": self.path, "auth": self.headers.get("Authorization")})
+                self.send_response(200)
+                self.end_headers()
+                self.wfile.write(b"{}")
+
+            def log_message(self, format: str, *args: Any) -> None:
+                pass
+
+        server_b = http.server.HTTPServer(("127.0.0.1", 0), _TargetBHandler)
+        port_b = server_b.server_port
+        thread_b = threading.Thread(target=server_b.serve_forever, daemon=True)
+        thread_b.start()
+
+        redirect_code = 302
+
+        class _RedirectAHandler(http.server.BaseHTTPRequestHandler):
+            def do_POST(self) -> None:
+                self.send_response(redirect_code)
+                self.send_header("Location", f"http://127.0.0.1:{port_b}/steal")
+                self.end_headers()
+
+            def log_message(self, format: str, *args: Any) -> None:
+                pass
+
+        server_a = http.server.HTTPServer(("127.0.0.1", 0), _RedirectAHandler)
+        port_a = server_a.server_port
+        thread_a = threading.Thread(target=server_a.serve_forever, daemon=True)
+        thread_a.start()
+
+        try:
+            for code in (301, 302, 303):
+                redirect_code = code
+                with self.assertRaises(FeatherlessHTTPError) as ctx:
+                    default_featherless_transport(
+                        f"http://127.0.0.1:{port_a}/v1/chat/completions",
+                        {"Content-Type": "application/json", "Authorization": "Bearer rc_fake_key_redirect_test"},
+                        b'{"model": "test"}',
+                        5.0,
+                    )
+                self.assertEqual(ctx.exception.status_code, code)
+                self.assertEqual(len(received_on_b), 0, f"Target B must receive nothing on {code} redirect!")
+
+            # Also verify 3xx is treated as non-retryable on the primary model in LLMAdapter
+            case = _make_case()
+            msgs = build_delimited_messages("Triage", {"report_text": case.report_text})
+            models_called: list[str] = []
+
+            def redirect_on_primary_transport(url: str, headers: dict[str, str], body: bytes, timeout_s: float) -> dict[str, Any]:
+                m = json.loads(body.decode("utf-8"))["model"]
+                models_called.append(m)
+                if m == "Qwen/Qwen3-Coder-30B-A3B-Instruct":
+                    return default_featherless_transport(
+                        f"http://127.0.0.1:{port_a}/v1/chat/completions",
+                        headers,
+                        body,
+                        timeout_s,
+                    )
+                return {
+                    "model": m,
+                    "choices": [{"message": {"content": _valid_triage_json()}}],
+                    "usage": {"prompt_tokens": 50, "completion_tokens": 20},
+                }
+
+            with tempfile.TemporaryDirectory() as tmpdir:
+                env_path = _write_temp_env_file(tmpdir)
+                llm = LLMAdapter(case=case, use_real=True, env_file_path=env_path, transport=redirect_on_primary_transport)
+                res = llm.complete("triage", msgs)
+                # Primary model called only ONCE (not retried on 3xx), then fallback succeeded
+                self.assertEqual(
+                    models_called,
+                    ["Qwen/Qwen3-Coder-30B-A3B-Instruct", "Qwen/Qwen3-30B-A3B-Instruct-2507"],
+                )
+                self.assertEqual(res.model, "Qwen/Qwen3-30B-A3B-Instruct-2507")
+                self.assertEqual(len(received_on_b), 0)
+        finally:
+            server_a.shutdown()
+            server_a.server_close()
+            server_b.shutdown()
+            server_b.server_close()
+
+    def test_endpoint_validation_enforces_https_and_exact_featherless_host(self) -> None:
+        """A2 regression: reject non-https, non-api.featherless.ai hosts, custom ports, and userinfo before sending anything."""
+        self.assertEqual(
+            validate_featherless_endpoint("https://api.featherless.ai/v1/chat/completions"),
+            "https://api.featherless.ai/v1/chat/completions",
+        )
+        bad_endpoints = [
+            "http://evil.example/v1",
+            "https://evil.example/v1/chat/completions",
+            "http://api.featherless.ai/v1/chat/completions",
+            "https://api.featherless.ai:8443/v1/chat/completions",
+            "https://api.featherless.ai:443/v1/chat/completions",
+            "https://user:pass@api.featherless.ai/v1/chat/completions",
+            "https://evil@api.featherless.ai/v1/chat/completions",
+            "https://api.featherless.ai.evil.example/v1/chat/completions",
+            "https://127.0.0.1/v1/chat/completions",
+            "https://api.featherless.ai/v1/chat/completions?redirect=evil",
+            "https://api.featherless.ai/v1/../admin",
+            "",
+        ]
+        for bad_url in bad_endpoints:
+            with self.subTest(bad_url=bad_url):
+                with self.assertRaises(ValueError):
+                    validate_featherless_endpoint(bad_url)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            bad_cfg_path = Path(tmpdir) / "bad_config.json"
+            raw_cfg = json.loads((REPO_ROOT / "src" / "resolveqa" / "llm" / "config.json").read_text(encoding="utf-8"))
+            raw_cfg["endpoint"] = "http://evil.example/v1"
+            bad_cfg_path.write_text(json.dumps(raw_cfg), encoding="utf-8")
+            with self.assertRaises(ValueError):
+                load_llm_config(bad_cfg_path)
+
+            # Even if someone bypasses __post_init__ on llm.config, _complete_via_featherless rejects before calling transport
+            env_path = _write_temp_env_file(tmpdir)
+            transport_called = False
+
+            def spy_transport(url: str, headers: dict[str, str], body: bytes, timeout_s: float) -> dict[str, Any]:
+                nonlocal transport_called
+                transport_called = True
+                return {}
+
+            case = _make_case()
+            llm = LLMAdapter(case=case, use_real=True, env_file_path=env_path, transport=spy_transport)
+            object.__setattr__(llm.config, "endpoint", "http://evil.example/v1")
+            with self.assertRaises(ValueError):
+                llm.complete("triage", build_delimited_messages("Triage", {"report_text": case.report_text}))
+            self.assertFalse(transport_called)
+
+    def test_system_exceptions_keyboard_interrupt_and_system_exit_are_not_swallowed(self) -> None:
+        """A3 regression: KeyboardInterrupt and SystemExit propagate immediately without being caught as provider errors."""
+        case = _make_case()
+        msgs = build_delimited_messages("Triage", {"report_text": case.report_text})
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            env_path = _write_temp_env_file(tmpdir)
+
+            for sys_exc in (KeyboardInterrupt("user interrupt"), SystemExit(99)):
+                calls = 0
+
+                def raising_sys_transport(url: str, headers: dict[str, str], body: bytes, timeout_s: float) -> dict[str, Any]:
+                    nonlocal calls
+                    calls += 1
+                    raise sys_exc
+
+                llm = LLMAdapter(case=case, use_real=True, env_file_path=env_path, transport=raising_sys_transport)
+                with self.assertRaises(type(sys_exc)):
+                    llm.complete("triage", msgs)
+                self.assertEqual(calls, 1)
+
+    def test_default_featherless_transport_with_local_server_and_urllib_errors(self) -> None:
+        """A4 regression: test default_featherless_transport against real local HTTP server, closed port (ConnectionError), timeout (TimeoutError), 401 non-retry, and error body secret redaction."""
+        mode = "ok"
+        secret_in_err = "sk-errorbodysecret123456789"
+
+        class _LocalTransportHandler(http.server.BaseHTTPRequestHandler):
+            def do_POST(self) -> None:
+                if mode == "401":
+                    self.send_response(401)
+                    self.end_headers()
+                    self.wfile.write(f"Unauthorized token {secret_in_err}".encode("utf-8"))
+                elif mode == "slow":
+                    import time
+                    time.sleep(0.4)
+                    self.send_response(200)
+                    self.end_headers()
+                    self.wfile.write(b"{}")
+                else:
+                    self.send_response(200)
+                    self.end_headers()
+                    resp = {
+                        "model": "Qwen/Qwen3-Coder-30B-A3B-Instruct",
+                        "choices": [{"message": {"content": _valid_triage_json()}}],
+                        "usage": {"prompt_tokens": 11, "completion_tokens": 22},
+                    }
+                    self.wfile.write(json.dumps(resp).encode("utf-8"))
+
+            def log_message(self, format: str, *args: Any) -> None:
+                pass
+
+        srv = http.server.HTTPServer(("127.0.0.1", 0), _LocalTransportHandler)
+        port = srv.server_port
+        t = threading.Thread(target=srv.serve_forever, daemon=True)
+        t.start()
+        local_url = f"http://127.0.0.1:{port}/v1/chat/completions"
+
+        try:
+            # 1) 200 OK JSON parsing via default_featherless_transport
+            mode = "ok"
+            data = default_featherless_transport(local_url, {"Content-Type": "application/json"}, b"{}", 5.0)
+            self.assertEqual(data["usage"]["prompt_tokens"], 11)
+
+            # 2) 401 HTTPError mapping and secret redaction in error body
+            mode = "401"
+            with self.assertRaises(FeatherlessHTTPError) as ctx401:
+                default_featherless_transport(local_url, {"Content-Type": "application/json"}, b"{}", 5.0)
+            self.assertEqual(ctx401.exception.status_code, 401)
+            self.assertNotIn(secret_in_err, str(ctx401.exception))
+            self.assertIn("[REDACTED_SECRET]", str(ctx401.exception))
+
+            # 3) Non-retryable 401 in LLMAdapter does NOT retry primary model
+            case = _make_case()
+            msgs = build_delimited_messages("Triage", {"report_text": case.report_text})
+            models_401: list[str] = []
+
+            def transport_401(url: str, headers: dict[str, str], body: bytes, timeout_s: float) -> dict[str, Any]:
+                m = json.loads(body.decode("utf-8"))["model"]
+                models_401.append(m)
+                if m == "Qwen/Qwen3-Coder-30B-A3B-Instruct":
+                    return default_featherless_transport(local_url, headers, body, timeout_s)
+                return {
+                    "model": m,
+                    "choices": [{"message": {"content": _valid_triage_json()}}],
+                    "usage": {"prompt_tokens": 20, "completion_tokens": 10},
+                }
+
+            with tempfile.TemporaryDirectory() as tmpdir:
+                env_path = _write_temp_env_file(tmpdir)
+                llm = LLMAdapter(case=case, use_real=True, env_file_path=env_path, transport=transport_401)
+                res = llm.complete("triage", msgs)
+                self.assertEqual(
+                    models_401,
+                    ["Qwen/Qwen3-Coder-30B-A3B-Instruct", "Qwen/Qwen3-30B-A3B-Instruct-2507"],
+                )
+                self.assertEqual(res.model, "Qwen/Qwen3-30B-A3B-Instruct-2507")
+
+            # 4) Timeout mapped to TimeoutError
+            mode = "slow"
+            with self.assertRaises(TimeoutError):
+                default_featherless_transport(local_url, {"Content-Type": "application/json"}, b"{}", 0.05)
+        finally:
+            srv.shutdown()
+            srv.server_close()
+
+        # 5) Connection refused against closed port mapped to ConnectionError
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.bind(("127.0.0.1", 0))
+            closed_port = s.getsockname()[1]
+        with self.assertRaises(ConnectionError):
+            default_featherless_transport(
+                f"http://127.0.0.1:{closed_port}/v1/chat/completions",
+                {"Content-Type": "application/json"},
+                b"{}",
+                1.0,
+            )
+
+    def test_traceback_locals_do_not_contain_key_and_reproduction_prompt_excludes_needs_info(self) -> None:
+        """A5 & A6 regression: traceback frames never retain the key in f_locals, and reproduction prompt excludes needs_info rule."""
+        self.assertIn("needs_info", PURPOSE_PROMPT_GUIDELINES["triage"])
+        self.assertNotIn("needs_info", PURPOSE_PROMPT_GUIDELINES["reproduction"])
+        self.assertNotIn("reproduction=null", PURPOSE_PROMPT_GUIDELINES["reproduction"])
+
+        case = _make_case()
+        msgs = build_delimited_messages("Triage", {"report_text": case.report_text})
+
+        def failing_transport(url: str, headers: dict[str, str], body: bytes, timeout_s: float) -> dict[str, Any]:
+            raise FeatherlessHTTPError(500, "Internal error")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            env_path = _write_temp_env_file(
+                tmpdir, key_value="".join(["rc_ephemeral_", "frame_secret_key_77889900"])
+            )
+            llm = LLMAdapter(case=case, use_real=True, env_file_path=env_path, transport=failing_transport)
+            try:
+                llm.complete("triage", msgs)
+                self.fail("Expected LLMProviderError")
+            except LLMProviderError as err:
+                tb = err.__traceback__
+                visited_frames = 0
+                while tb is not None:
+                    locals_repr = repr(tb.tb_frame.f_locals)
+                    self.assertNotIn("".join(["rc_ephemeral_", "frame_secret_key_77889900"]), locals_repr)
+                    visited_frames += 1
+                    tb = tb.tb_next
+                self.assertGreaterEqual(visited_frames, 2)
 
     def test_mock_fix_patch_applies_cleanly_to_current_demo_target(self) -> None:
         llm = LLMAdapter(case=_make_case())
