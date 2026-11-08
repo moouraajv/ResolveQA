@@ -115,7 +115,8 @@ Este documento consolida a revisão dos PRs do front, o estado do backend e uma 
 ### 3.3 Superfície HTTP atual (`web/server.py`)
 
 Já existe:
-- `POST/GET /api/cases`, form, chat simulado
+- `POST /api/cases`, form, chat simulado
+- `GET /api/cases/<id>` (consulta por ID)
 - `GET /api/cases/<id>/timeline`, HTML timeline
 - `POST /api/cases/<id>/reply`, `POST .../delivery`
 
@@ -144,7 +145,7 @@ Falta para alinhar ao front #6:
 7. **Evidence store (#47)** + varredura de segredos antes de persistir artefatos (alinhar RNF-01 com store, não só scan no delivery).
 8. **Front #6:** quebrar `app/admin/page.tsx` e modularizar `app/globals.css`; consumir timeline real do backend.
 9. **CI:** backend `pytest` em Linux + job Windows smoke; front `npm test` / `test:stream` / `tsc` / `build` no PR #6.
-10. **Fechar issues B** (#13–#19, #24–#27) já cobertas pelo #51 após validação de aceite.
+10. **Fechar issues B** (#13–#19, #24–#27) após validação de aceite: #13/#14 (Intake/chat) via #44; demais cobertas pelo #51.
 11. **LLM real (#46 Featherless)** atrás do adapter, com limites e redaction.
 
 ### P2 — Roadmap / higiene
@@ -180,7 +181,7 @@ Falta para alinhar ao front #6:
 - [ ] Time B valida lista/API proposta contra o cliente do front (`lib/resolveqa/client.ts`)
 - [ ] Issue #22 (playbook) priorizada antes de expandir Delivery/Reply
 - [ ] Front #6 só marca “produção” completa após auth + listagem/stream
-- [ ] Issues B (#13–#27) fechadas com referência ao #51 quando o aceite for revisado por humano
+- [ ] Issues B (#13–#19, #24–#27) fechadas com referência ao #44 para Intake/chat (#13/#14) e ao #51 quando o aceite for revisado por humano
 
 ---
 
