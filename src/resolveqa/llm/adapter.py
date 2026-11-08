@@ -327,43 +327,57 @@ def validate_llm_output(
 
     if norm_purpose == "fix":
         try:
-            payload = json.loads(content)
+            raw_payload = json.loads(content)
         except Exception as err:
             raise LLMOutputError(f"Invalid JSON in fix output: {err}", purpose=purpose) from err
-        if not isinstance(payload, dict):
-            raise LLMOutputError("Fix output must be a JSON object", purpose=purpose)
+
+        if isinstance(raw_payload, dict) and "edits" in raw_payload and isinstance(raw_payload["edits"], list):
+            edit_list = raw_payload["edits"]
+        elif isinstance(raw_payload, list):
+            edit_list = raw_payload
+        elif isinstance(raw_payload, dict):
+            edit_list = [raw_payload]
+        else:
+            raise LLMOutputError("Fix output must be a JSON object or list of edits", purpose=purpose)
+
+        if not edit_list:
+            raise LLMOutputError("Fix output edits list cannot be empty", purpose=purpose)
 
         allowed_keys = {"file", "search", "replace"}
-        extra = set(payload.keys()) - allowed_keys
-        if extra:
-            raise LLMOutputError(f"Unexpected keys in fix output: {sorted(extra)}", purpose=purpose)
-        for req in ("file", "search", "replace"):
-            val = payload.get(req)
-            if not isinstance(val, str) or not val.strip():
-                raise LLMOutputError(f"Fix field {req!r} must be a non-empty string", purpose=purpose)
+        allowed_files = schema.get("allowed_files") if schema is not None else None
 
-        file_path = payload["file"].strip()
-        rel_parts = Path(file_path).parts
-        if (
-            file_path.startswith(("/", "\\"))
-            or ".." in rel_parts
-            or any(p in {"tests", ".github"} for p in rel_parts)
-            or Path(file_path).name.startswith("test_")
-        ):
-            raise LLMOutputError(f"Fix target file {file_path!r} is outside allowed source files", purpose=purpose)
+        for payload in edit_list:
+            if not isinstance(payload, dict):
+                raise LLMOutputError("Each fix edit must be a JSON object", purpose=purpose)
+            extra = set(payload.keys()) - allowed_keys
+            if extra:
+                raise LLMOutputError(f"Unexpected keys in fix output: {sorted(extra)}", purpose=purpose)
+            for req in ("file", "search", "replace"):
+                val = payload.get(req)
+                if not isinstance(val, str) or not val.strip():
+                    raise LLMOutputError(f"Fix field {req!r} must be a non-empty string", purpose=purpose)
 
-        if payload["search"] == payload["replace"]:
-            raise LLMOutputError("Fix 'search' and 'replace' blocks cannot be identical", purpose=purpose)
+            file_path = payload["file"].strip()
+            rel_parts = Path(file_path).parts
+            if (
+                file_path.startswith(("/", "\\"))
+                or ".." in rel_parts
+                or any(p in {"tests", ".github"} for p in rel_parts)
+                or Path(file_path).name.startswith("test_")
+            ):
+                raise LLMOutputError(f"Fix target file {file_path!r} is outside allowed source files", purpose=purpose)
 
-        if schema is not None:
-            allowed_files = schema.get("allowed_files")
+            if payload["search"] == payload["replace"]:
+                raise LLMOutputError("Fix 'search' and 'replace' blocks cannot be identical", purpose=purpose)
+
             if isinstance(allowed_files, (list, tuple, set)) and file_path not in allowed_files:
                 raise LLMOutputError(
                     f"Fix target file {file_path!r} is not in allowed_files {list(allowed_files)}",
                     purpose=purpose,
                 )
-            if "type" in schema:
-                _validate_against_json_schema(payload, schema, purpose)
+
+        if schema is not None and "type" in schema:
+            _validate_against_json_schema(raw_payload, schema, purpose)
         return
 
     raise LLMOutputError(
