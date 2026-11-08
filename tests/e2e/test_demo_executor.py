@@ -36,6 +36,13 @@ def test_public_pipeline(scenario, report, expected, monkeypatch):
         assert result.verdict.after.exit_code == result.verdict.suite.exit_code == 0
         assert result.verdict.base_revision != result.verdict.fix_revision
         assert 'total agora R$ 180,00' in result.message.text
+        assert result.receipt_path.is_file()
+        receipt = result.receipt_path.read_text()
+        assert 'Antes: R$ 200,00. Agora: R$ 180,00.' in receipt
+        assert result.verification_code in receipt
+        for internal in ('checkout.py', 'calculate_total', 'AssertionError', 'pytest'):
+            assert internal not in receipt
+            assert internal not in result.tracking_path.read_text()
         package = Path(result.delivery.url_or_path)
         assert (package / 'MANIFEST.json').is_file()
         assert 'AssertionError' in (package / 'before.log').read_text()
@@ -48,6 +55,14 @@ def test_public_pipeline(scenario, report, expected, monkeypatch):
         assert '?' in result.message.text
         assert 'valor' in result.message.text
         assert not list(result.run_dir.glob('evidence/*.diff'))
+        assert result.receipt_path is None
+        assert not (result.run_dir / 'comprovante.txt').exists()
+    assert result.tracking_path.is_file()
+    html = result.tracking_path.read_text()
+    assert 'demonstração com dados simulados' in html
+    for event in events:
+        if event.to_state and event.to_state.value in {'triaging', 'reproducing', 'fixing', 'verifying', 'verified', 'needs_info'}:
+            assert f'datetime="{event.ts}"' in html
     from resolveqa.security import scan_paths_for_secrets
     assert not scan_paths_for_secrets([result.run_dir])
     descriptors = json.loads((result.run_dir / 'evidence-manifest.json').read_text())

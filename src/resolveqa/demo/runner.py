@@ -20,6 +20,8 @@ from resolveqa.orchestrator import Orchestrator
 from resolveqa.reply import ReplyComposer, ReplyOutcome
 from resolveqa.store import EventStore
 
+from .customer import generate_customer_artifacts
+
 COUPON_REPORT = ('Comprei R$ 200,00 no site, apliquei o cupom DESC10 de 10% e o total '
                  'continuou R$ 200,00. Deveria ser R$ 180,00.')
 VAGUE_REPORT = 'O checkout está estranho, o valor não bate.'
@@ -60,6 +62,9 @@ class DemoResult:
     verdict: Verdict | None = None
     delivery: DeliveryResult | None = None
     message: CustomerMessage | None = None
+    receipt_path: Path | None = None
+    tracking_path: Path | None = None
+    verification_code: str | None = None
 
 
 class _RecordedStage:
@@ -197,9 +202,19 @@ def run_demo(scenario='coupon', *, root=ROOT, llm=None, real=False):
                         tuple(ids), verdict, delivery, message)
     (run_dir / 'evidence-manifest.json').write_text(
         json.dumps(descriptors, ensure_ascii=False, indent=2), encoding='utf-8')
-    (run_dir / 'demo-result.json').write_text(json.dumps({
+    summary = {
         'mode': mode, 'channel': 'Canal simulado', 'case': final.to_dict(),
         'evidence_ids': ids, 'delivery': delivery.to_dict() if delivery else None,
         'message': message.to_dict() if message else None,
-    }, ensure_ascii=False, indent=2), encoding='utf-8')
-    return result
+    }
+    summary_path = run_dir / 'demo-result.json'
+    summary_path.write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding='utf-8')
+    customer = generate_customer_artifacts(run_dir)
+    summary['customer_artifacts'] = {
+        'tracking': customer.tracking_path.name,
+        'receipt': customer.receipt_path.name if customer.receipt_path else None,
+        'verification_code': customer.verification_code,
+    }
+    summary_path.write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding='utf-8')
+    return replace(result, tracking_path=customer.tracking_path,
+                   receipt_path=customer.receipt_path, verification_code=customer.verification_code)

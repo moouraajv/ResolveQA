@@ -68,3 +68,41 @@ PYTHONPATH=src .venv/bin/python -B -m resolveqa.demo.validate_pending --run-demo
 
 Os SHAs estão em `validate_pending.py`. Mudanças posteriores nos PRs exigem nova
 validação. A suíte normal continua expondo dependências ausentes até seus merges.
+
+## Comprovante de correção e acompanhamento
+
+O executor também grava e imprime os caminhos destes documentos na pasta do caso:
+
+- `acompanhamento.html`: página estática, responsiva e sem JavaScript, fontes ou
+  imagens externas. Mostra somente as etapas efetivamente registradas, seus
+  horários em UTC e um mascote SVG inline com estado visual correspondente à
+  última etapa. Tentativas repetidas continuam na ordem dos eventos. Não há
+  etapas futuras preenchidas nem porcentagem de progresso inventada.
+- `comprovante.txt`: somente em `verified`, com aprovação independente registrada
+  e evidência do verdict RED/GREEN/suíte verde. Contém id, data/hora da aprovação,
+  resumo seguro, antes/depois, “Correção verificada” e código de conferência.
+  A página incorpora o mesmo texto. Em modo mock, os dois documentos identificam
+  “demonstração com dados simulados”. Em `needs_info`, não há comprovante: a página
+  apresenta uma pergunta objetiva sobre compra, cupom e valores esperado/observado.
+
+A geração lê `demo-result.json`, `events.jsonl` e `evidence-manifest.json` do caso.
+Confere cada SHA-256 contra o arquivo correspondente e recusa referências externas,
+sequência inconsistente ou aprovação sem evento/verdict. O código usa os primeiros
+16 caracteres hexadecimais de SHA-256 sobre JSON canônico com id, horário de
+aprovação e pares ordenados `(evidence_id, sha256)`, em quatro grupos de quatro.
+É um código de conferência de integridade, sem assinatura digital ou serviço externo.
+
+Os textos do cliente são construídos com campos permitidos: id opaco, horários e
+valores monetários completos. Não copiam texto livre do relato, perguntas do LLM,
+nomes de arquivos, caminhos, repositórios, logs ou diffs. O relato aparece resumido
+em linguagem simples. A pergunta de dados faltantes usa um modelo seguro do cenário
+de checkout. HTML usa escape, CSP restritiva e SVG/CSS inline. Os documentos são
+artefatos derivados; não alteram eventos, evidências ou decisões do orquestrador.
+
+Para regenerar a partir de um caso registrado, use a API pública
+`resolveqa.demo.customer.generate_customer_artifacts(run_dir)`. Os testes próprios
+independem das etapas pendentes:
+
+```sh
+.venv/bin/python -B -m pytest tests/e2e/test_customer_artifacts.py
+```

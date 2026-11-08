@@ -41,6 +41,10 @@ def main(argv=None):
             if result.message:
                 print('Resposta simulada: ' + result.message.text)
             print(f'Registro: {result.run_dir / "demo-result.json"}')
+            print(f'Acompanhamento: {result.tracking_path}')
+            if result.receipt_path is not None:
+                print(f'Comprovante: {result.receipt_path}')
+                print(f'Código de verificação: {result.verification_code}')
             expected = 'verified' if scenario == 'coupon' else 'needs_info'
             if result.case.state.value != expected:
                 print(f'Cenário não concluído: {result.case.state.value}', file=sys.stderr)
