@@ -1,0 +1,15 @@
+{
+  "provider": "featherless",
+  "endpoint": "https://api.featherless.ai/v1/chat/completions",
+  "primary_model": "Qwen/Qwen3-Coder-30B-A3B-Instruct",
+  "fallback_model": "Qwen/Qwen3-30B-A3B-Instruct-2507",
+  "mock_provider": "mock",
+  "mock_model": "deterministic-mock-v1",
+  "temperature": 0,
+  "max_tokens": 1500,
+  "timeout_s": 60.0,
+  "max_retries": 1,
+  "retryable_status_codes": [429, 503],
+  "env_file": "~/.config/resolveqa/featherless.env",
+  "env_key_name": "FEATHERLESS_API_KEY"
+}
