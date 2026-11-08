@@ -127,10 +127,14 @@ Resources:
     Properties:
       InstanceType: !Ref InstanceType
       ImageId: !Ref AmiId
-      SubnetId: !Ref SubnetId
       IamInstanceProfile: !Ref BackendInstanceProfile
-      SecurityGroupIds:
-        - !Ref BackendSecurityGroup
+      NetworkInterfaces:
+        - DeviceIndex: "0"
+          AssociatePublicIpAddress: true
+          DeleteOnTermination: true
+          SubnetId: !Ref SubnetId
+          GroupSet:
+            - !Ref BackendSecurityGroup
       Tags:
         - Key: Name
           Value: !Sub resolveqa-backend-${EnvironmentName}
