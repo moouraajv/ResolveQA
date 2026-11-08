@@ -14,15 +14,19 @@ Endpoints tested:
   7. POST /api/chat/messages   -> HTTP 201, creates case via simulated chat API
   8. POST /chat/messages       -> HTTP 201, creates case via simulated chat form
   9. GET  /api/cases/notfound  -> HTTP 404, verifies error response
+  10. Origin header tests (when --origin-secret is active):
+      - Request without header -> HTTP 403 Forbidden
+      - Request with invalid header -> HTTP 403 Forbidden
 
 Usage:
-  python scripts/smoke_test.py [--base-url http://127.0.0.1:8080]
+  python scripts/smoke_test.py [--base-url http://127.0.0.1:8080] [--origin-secret <token>]
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from urllib.error import HTTPError
 from urllib.parse import urlencode
@@ -70,8 +74,11 @@ def _request(
         return err.code, raw
 
 
-def run_smoke_tests(base_url: str) -> bool:
+def run_smoke_tests(base_url: str, origin_secret: str | None = None) -> bool:
     print(f"[SmokeTest] Running endpoint validations against {base_url}...")
+    if origin_secret:
+        print("[SmokeTest] Origin secret verification enabled.")
+
     passed = 0
     total = 0
 
@@ -84,12 +91,46 @@ def run_smoke_tests(base_url: str) -> bool:
         else:
             print(f"  [FAIL] {name} - {detail}")
 
+    default_headers: dict[str, str] = {}
+    if origin_secret:
+        default_headers["X-ResolveQA-Origin-Verify"] = origin_secret
+
+        # Negative test 1: Request with NO origin header should return 403
+        try:
+            st, data = _request(base_url, "GET", "/health", headers={})
+            check(
+                "Negative Test: Request without origin header rejected",
+                st == 403,
+                f"status={st} (expected 403)",
+            )
+        except Exception as exc:
+            check("Negative Test: Request without origin header rejected", False, f"Exception: {exc}")
+
+        # Negative test 2: Request with WRONG origin header should return 403
+        try:
+            st, data = _request(
+                base_url,
+                "GET",
+                "/health",
+                headers={"X-ResolveQA-Origin-Verify": "invalid-wrong-token"},
+            )
+            check(
+                "Negative Test: Request with invalid origin header rejected",
+                st == 403,
+                f"status={st} (expected 403)",
+            )
+        except Exception as exc:
+            check("Negative Test: Request with invalid origin header rejected", False, f"Exception: {exc}")
+
     # 1. GET /health
     try:
-        st, data = _request(base_url, "GET", "/health")
+        st, data = _request(base_url, "GET", "/health", headers=default_headers)
         check(
             "GET /health",
-            st == 200 and isinstance(data, dict) and data.get("ok") is True and data.get("storage") == "ephemeral-in-memory",
+            st == 200
+            and isinstance(data, dict)
+            and data.get("ok") is True
+            and data.get("storage") == "ephemeral-in-memory",
             f"status={st}, storage={data.get('storage') if isinstance(data, dict) else 'non-json'}",
         )
     except Exception as exc:
@@ -97,10 +138,13 @@ def run_smoke_tests(base_url: str) -> bool:
 
     # 2. GET /form
     try:
-        st, data = _request(base_url, "GET", "/form")
+        st, data = _request(base_url, "GET", "/form", headers=default_headers)
         check(
             "GET /form",
-            st == 200 and isinstance(data, str) and "Intake de relato" in data and "armazenamento efêmero" in data,
+            st == 200
+            and isinstance(data, str)
+            and "Intake de relato" in data
+            and "armazenamento efêmero" in data,
             f"status={st}, html_len={len(data) if isinstance(data, str) else 0}",
         )
     except Exception as exc:
@@ -112,11 +156,17 @@ def run_smoke_tests(base_url: str) -> bool:
             base_url,
             "POST",
             "/api/cases",
-            json_data={"repo_ref": "octocat/Hello-World", "report_text": "Bug report without client id"},
+            json_data={
+                "repo_ref": "octocat/Hello-World",
+                "report_text": "Bug report without client id",
+            },
+            headers=default_headers,
         )
         check(
             "POST /api/cases (missing client_id rejected)",
-            st == 400 and isinstance(data, dict) and "client_id is required" in data.get("error", ""),
+            st == 400
+            and isinstance(data, dict)
+            and "client_id is required" in data.get("error", ""),
             f"status={st}, error={data.get('error') if isinstance(data, dict) else data}",
         )
     except Exception as exc:
@@ -134,6 +184,7 @@ def run_smoke_tests(base_url: str) -> bool:
                 "repo_ref": "octocat/Hello-World",
                 "report_text": "Smoke test report for ephemeral AWS demo packaging",
             },
+            headers=default_headers,
         )
         is_created = st == 201 and isinstance(data, dict) and "case" in data
         if is_created:
@@ -149,7 +200,9 @@ def run_smoke_tests(base_url: str) -> bool:
     # 5. GET /api/cases/<case_id>
     if created_case_id:
         try:
-            st, data = _request(base_url, "GET", f"/api/cases/{created_case_id}")
+            st, data = _request(
+                base_url, "GET", f"/api/cases/{created_case_id}", headers=default_headers
+            )
             case_match = (
                 st == 200
                 and isinstance(data, dict)
@@ -168,7 +221,7 @@ def run_smoke_tests(base_url: str) -> bool:
 
     # 6. GET /chat
     try:
-        st, data = _request(base_url, "GET", "/chat")
+        st, data = _request(base_url, "GET", "/chat", headers=default_headers)
         check(
             "GET /chat",
             st == 200 and isinstance(data, str) and "Canal simulado" in data,
@@ -188,6 +241,7 @@ def run_smoke_tests(base_url: str) -> bool:
                 "repo_ref": "octocat/Hello-World",
                 "report_text": "Simulated chat report for smoke test",
             },
+            headers=default_headers,
         )
         chat_ok = (
             st == 201
@@ -214,6 +268,7 @@ def run_smoke_tests(base_url: str) -> bool:
                 "repo_ref": "octocat/Hello-World",
                 "report_text": "Form-based chat message smoke test",
             },
+            headers=default_headers,
         )
         check(
             "POST /chat/messages (form)",
@@ -225,7 +280,9 @@ def run_smoke_tests(base_url: str) -> bool:
 
     # 9. GET /api/cases/non-existent
     try:
-        st, data = _request(base_url, "GET", "/api/cases/non-existent-case-id-12345")
+        st, data = _request(
+            base_url, "GET", "/api/cases/non-existent-case-id-12345", headers=default_headers
+        )
         check(
             "GET /api/cases/<non-existent>",
             st == 404 and isinstance(data, dict) and "not found" in data.get("error", "").lower(),
@@ -245,9 +302,15 @@ def main() -> None:
         default="http://127.0.0.1:8080",
         help="Base URL of ResolveQA backend (default: http://127.0.0.1:8080)",
     )
+    parser.add_argument(
+        "--origin-secret",
+        default=os.environ.get("RESOLVEQA_ORIGIN_SECRET"),
+        help="Origin secret token to pass in X-ResolveQA-Origin-Verify header",
+    )
     args = parser.parse_args()
 
-    success = run_smoke_tests(args.base_url)
+    origin_secret = args.origin_secret.strip() if args.origin_secret else None
+    success = run_smoke_tests(args.base_url, origin_secret=origin_secret)
     sys.exit(0 if success else 1)
 
 

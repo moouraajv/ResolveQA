@@ -2,117 +2,150 @@
 
 ## 1. Executive Summary & Hackathon Scope
 
-Este documento especifica a arquitetura, empacotamento e estratégia de implantação na AWS para a superfície HTTP atual do **ResolveQA** (Intake e Chat simulado).
+Este documento detalha a arquitetura, modelo de custos, segurança de rede e procedimento de empacotamento na AWS para a superfície HTTP atual do **ResolveQA** (Intake e Chat simulado).
 
 > [!IMPORTANT]
 > **Esclarecimento de Escopo (Hackathon):**
-> O objetivo do hackathon exige a **jornada completa e real de resolução de bugs**:
-> 1. Uma pessoa relata um defeito (via Web, API ou Chat);
-> 2. Um agente inteligente reproduz o bug com teste de regressão;
-> 3. O agente implementa a correção e verifica a suíte de testes;
-> 4. O sistema gera automaticamente um Pull Request no GitHub com evidências.
+> O objetivo central do hackathon é demonstrar a **jornada completa e real de resolução de bugs**:
+> 1. Uma pessoa relata um defeito através do formulário Web, API ou Chat;
+> 2. Um agente inteligente reproduz o bug executando a suíte de testes do repositório;
+> 3. O agente implementa a correção necessária e verifica a eliminação da falha;
+> 4. O sistema gera automaticamente um Pull Request documentado no GitHub com evidências.
 >
-> A entrega desta tarefa de infraestrutura é uma **etapa intermediária de runtime**. Ela empacota as superfícies de **Intake** e **Canal Simulado** (issues #13 e #14) para execução em nuvem com HTTPS, mas **NÃO constitui a entrega final ponta a ponta**. O armazenamento de casos é **estritamente efêmero em memória (`EphemeralCaseStore`)**, sem banco de dados persistente e sem o pipeline completo de reprodução/PR conectado ainda.
+> A infraestrutura apresentada neste documento é uma **etapa intermediária de runtime**. Ela empacota as superfícies de **Intake** (issue #13) e **Canal Simulado** (issue #14) em um ambiente seguro na nuvem com HTTPS, mas **NÃO substitui nem conclui a jornada ponta a ponta**. O armazenamento de casos é **estritamente efêmero em memória (`EphemeralCaseStore`)**, sem persistência durável em banco de dados e sem o agente de reprodução/correção acoplado nesta etapa.
 
 ---
 
 ## 2. Avaliação de Opções de Arquitetura AWS
 
-Durante a investigação técnica e testes no ambiente com credenciais reais da AWS (conta `<AWS_ACCOUNT_ID>`, perfil AWS configurado, região `us-east-1`), avaliamos quatro alternativas de implantação:
+Durante a investigação técnica na conta `<AWS_ACCOUNT_ID>` (perfil AWS configurado, região `us-east-1`), avaliamos quatro alternativas de implantação:
 
-| Critério | Opção 1: EC2 Mínimo + CloudFront HTTPS (Escolhida) | Opção 2: AWS App Runner | Opção 3: ECS Fargate + ALB | Opção 4: AWS Lambda + Function URL |
+| Critério | Opção 1: EC2 ARM64 + CloudFront HTTPS (Escolhida) | Opção 2: AWS App Runner | Opção 3: ECS Fargate + ALB | Opção 4: AWS Lambda + Function URL |
 | :--- | :--- | :--- | :--- | :--- |
 | **Status** | **Aprovada / Implementada** | **Rejeitada** | **Rejeitada** | **Rejeitada** |
-| **Custo Mensal Estimado** | **$0.00 a ~$3.02/mês** (`t4g.nano` Graviton ARM) | ~$5.00 a ~$15.00/mês | ~$23.00/mês (ALB fixo $16 + Fargate) | < $0.50/mês |
-| **HTTPS / TLS** | Nativo gratuito via `*.cloudfront.net` | Nativo via `*.awsapprunner.com` | Exige ACM + Domínio próprio em Route 53 | Nativo via Function URL |
-| **Preservação do Store Efêmero** | **100% (Processo único contínuo)** | Alto (instância única) | Alto (1 réplica) | **Inviável (múltiplos workers stateless perdem o estado em memória entre requisições)** |
-| **Dependência do Docker Local** | **Nenhuma (executa Python 3.11 nativo)** | Exige push OCI para ECR | Exige push OCI para ECR | Exige build de imagem ou zip com adaptadores |
-| **Assinaturas / Subscrições** | **Nenhuma necessária** | **Falha: `SubscriptionRequiredException`** | Nenhuma | Nenhuma |
-| **Complexidade de Template** | Baixa a Moderada (1 template CloudFormation) | Baixa | Alta (VPC, Subnets, ALB, Target Groups, ECS) | Moderada (requer adapter WSGI/ASGI) |
+| **Custo Estimado** | **~$7.26/mês** (detalhado abaixo) | ~$10.00 a ~$25.00/mês | ~$23.00+/mês (ALB $16 fixo + Fargate) | < $1.00/mês |
+| **HTTPS / TLS** | Nativo gratuito via `*.cloudfront.net` | Nativo via `*.awsapprunner.com` | Exige ACM + Domínio registrado | Nativo via Function URL |
+| **Store em Memória** | **100% preservado (processo único contínuo)** | Processo único | 1 réplica Fargate | **Inviável (múltiplas instâncias stateless perdem o estado)** |
+| **Dependência Docker** | **Nenhuma no deploy (Python 3.11 nativo)** | Exige imagem OCI no ECR | Exige imagem OCI no ECR | Exige container ou zip com adapters |
+| **Condição de Conta** | **Sem requisitos de subscrição** | **Inoperante: `SubscriptionRequiredException`** | Sem requisitos de subscrição | Sem requisitos de subscrição |
+| **Validação de Prontidão** | `CreationPolicy` + `cfn-signal` após healthcheck | Healthcheck integrado | Healthcheck integrado | Invocação direta |
 
-### Por que a Opção 1 (EC2 Mínimo + CloudFront) foi selecionada?
-1. **Sem bloqueio de subscrição**: A tentativa de listar serviços no App Runner (`aws apprunner list-services`) falhou com `SubscriptionRequiredException`. O usuário determinou estritamente não habilitar novas subscrições na conta.
-2. **Independência do daemon Docker local**: No host de desenvolvimento, o daemon Docker retornou `permission denied` no socket unix. A Opção 1 executa Python 3.11 nativo diretamente no Amazon Linux 2023 gerenciado pelo `systemd`, dispensando a necessidade de compilar ou enviar imagens no deploy.
-3. **Fidelidade do armazenamento em memória**: Por se tratar de um demo efêmero em processo único (`ThreadingHTTPServer`), uma única instância garante que todas as chamadas (criação de caso via POST `/api/cases` ou `/chat/messages` e consulta via GET `/api/cases/<id>`) acessem a mesma instância do `EphemeralCaseStore`.
-4. **HTTPS automático sem custos**: O CloudFront fornece terminação TLS com certificado gerenciado da AWS na URL padrão `https://dXXXXXXXX.cloudfront.net`, redirecionando HTTP para HTTPS sem necessidade de registrar domínios no Route 53.
-5. **Custo mínimo**: A instância `t4g.nano` (ARM64 Graviton2) custa ~$0.0042/hora (~$3/mês), e contas dentro do AWS Free Tier podem usar `t4g.micro` ou `t3.micro` sem custo.
-
----
-
-## 3. Topologia e Segurança
-
-A infraestrutura é provisionada via CloudFormation em [`infra/aws/template.yaml`](file://.orchestration/ResolveQA/worktrees/backend-aws/infra/aws/template.yaml):
-
-```
-+-----------------------------------------------------------------------------------+
-|                                  AWS Cloud                                        |
-|                                                                                   |
-|   Cliente / Navegador                                                             |
-|           │ (HTTPS seguro)                                                        |
-|           ▼                                                                       |
-|   ┌───────────────────────────────────────────────────────────┐                   |
-|   │ AWS CloudFront Distribution (dXXXXXX.cloudfront.net)     │                   |
-|   │ - Enforce HTTPS: redirect-to-https                        │                   |
-|   │ - CachingDisabled (todas as requisições repassadas)       │                   |
-|   │ - Injeção de Header Secreto: X-ResolveQA-Origin-Verify    │                   |
-|   └─────────────────────────────┬─────────────────────────────┘                   |
-|                                 │ (HTTP :8080)                                    |
-|                                 ▼                                                 |
-|   ┌───────────────────────────────────────────────────────────┐                   |
-|   │ Amazon EC2 Instance (t4g.nano / Amazon Linux 2023)        │                   |
-|   │ - Security Group: Ingress TCP 8080                        │                   |
-|   │ - systemd: resolveqa-backend.service                      │                   |
-|   │ - Runtime: Python 3.11 standard library only              │                   |
-|   │ - Store: EphemeralCaseStore (in-memory)                   │                   |
-|   └───────────────────────────────────────────────────────────┘                   |
-+-----------------------------------------------------------------------------------+
-```
-
-### Mecanismos de Proteção e Dados
-- **Restrição de Origem**: O CloudFront injeta um cabeçalho customizado secreto (`X-ResolveQA-Origin-Verify`) para validar que o tráfego recebido no backend provém da CDN e não de varreduras diretas da Internet.
-- **Isolamento de Dados no Intake**: Conforme estabelecido no Intake (RF-01) e Chat Simulado, relatos de bugs enviados por usuários são rigorosamente escapados em HTML (`html.escape`) e tratados como *dados passivos*, impedindo injeção de instruções ou scripts no renderizador.
+### Justificativa da Escolha da Opção 1:
+1. **Restrições de Execução do App Runner**: A execução de `aws apprunner list-services` falhou com `SubscriptionRequiredException`. O serviço não está habilitado na conta e os limites de governança estabelecem que novas assinaturas de serviços não devem ser ativadas.
+2. **Inviabilidade do Modelo Serverless para Store Efêmero**: No AWS Lambda, execuções concorrentes ou reciclagem de contêineres criam ambientes isolados. Uma requisição `POST /api/cases` criaria um caso na memória de uma instância que não existiria na chamada subsequente `GET /api/cases/<id>`. Além disso, a biblioteca padrão pura (`http.server`) não roda nativamente no Lambda sem dependências externas (como Mangum ou AWSGI).
+3. **Custo e Complexidade do ECS/ALB**: O Application Load Balancer cobra uma taxa fixa de ~$16.20/mês apenas para existir ocioso, além de exigir certificado ACM com domínio público registrado em DNS e compilação/envio de imagem Docker para o ECR (inviabilizado pelo bloqueio de socket do daemon local).
+4. **Vantagens do EC2 Graviton ARM64 + CloudFront**:
+   - Uma única instância (`t4g.nano`) rodando um processo contínuo com [`ProtectedIntakeHTTPServer`](file://.orchestration/ResolveQA/worktrees/backend-aws/scripts/run_server.py) assegura que todos os endpoints operem sobre a mesma instância em memória do [`EphemeralCaseStore`](file://.orchestration/ResolveQA/worktrees/backend-aws/src/resolveqa/intake/store.py).
+   - O CloudFront gerencia a terminação TLS publicamente em `https://dXXXXXXXX.cloudfront.net` sem requerer domínio próprio.
+   - O deploy não depende do Git `main` (que é docs-only), mas de um artefato empacotado e auditado com SHA-256 via S3 e IAM mínimo.
 
 ---
 
-## 4. Estrutura do Pacote e Arquivos
+## 3. Estimativa Realista de Custos na AWS
 
-- [`Dockerfile`](file://.orchestration/ResolveQA/worktrees/backend-aws/Dockerfile): Imagem OCI baseada em `python:3.11-slim` com usuário não privilegiado (`resolveqa`, UID 10001), healthcheck nativo com biblioteca padrão e sem dependências externas.
-- [`.dockerignore`](file://.orchestration/ResolveQA/worktrees/backend-aws/.dockerignore): Exclusão de caches, testes, documentação e infraestrutura para manter o contexto limpo.
-- [`infra/aws/template.yaml`](file://.orchestration/ResolveQA/worktrees/backend-aws/infra/aws/template.yaml): Template CloudFormation validado pela AWS API em `us-east-1`.
-- [`scripts/run_server.py`](file://.orchestration/ResolveQA/worktrees/backend-aws/scripts/run_server.py): Entrypoint com tratamento de sinais (`SIGTERM`/`SIGINT`), banners de disclaimer efêmero e configuração por variáveis de ambiente (`RESOLVEQA_HOST`, `RESOLVEQA_PORT`).
-- [`scripts/smoke_test.py`](file://.orchestration/ResolveQA/worktrees/backend-aws/scripts/smoke_test.py): Validador completo de endpoints que testa `/health`, `/form`, `/api/cases`, `/chat` e `/chat/messages` sem dependências externas.
-- [`scripts/validate_template.sh`](file://.orchestration/ResolveQA/worktrees/backend-aws/scripts/validate_template.sh): Script de validação sintática e semântica do CloudFormation.
+Diferente de suposições genéricas de gratuidade, os custos reais na região `us-east-1` são compostos por:
 
----
-
-## 5. Como Executar e Validar
-
-### 5.1 Execução Local do Servidor
-Para iniciar o servidor localmente:
-```bash
-python scripts/run_server.py --host 127.0.0.1 --port 8080
-```
-
-### 5.2 Execução da Suíte de Smoke Tests
-Em outro terminal ou contra uma URL remota:
-```bash
-python scripts/smoke_test.py --base-url http://127.0.0.1:8080
-```
-
-### 5.3 Validação do Template CloudFormation
-Para validar o template contra a API da AWS (somente leitura, sem criar recursos):
-```bash
-./scripts/validate_template.sh
-```
-
----
-
-## 6. Procedimento de Implantação na AWS (Quando Autorizado)
+1. **Computação EC2 (Graviton ARM64)**:
+   - `t4g.nano` (2 vCPU, 0.5 GB RAM): **$0.0042/hora = ~$3.02/mês**.
+   - `t4g.micro` (2 vCPU, 1.0 GB RAM): **$0.0084/hora = ~$6.05/mês**.
+   *(Nota: Se a conta estiver no período promocional de 750 horas do Free Tier para t4g.micro, o compute é isento, mas expira após o prazo da AWS)*.
+2. **Endereço IPv4 Público (Obrigatório pela AWS desde 01/02/2024)**:
+   - Cobrança de **$0.005/hora por endereço IPv4 público em uso** = **~$3.60/mês**. Essa taxa se aplica mesmo para instâncias dentro do Free Tier de computação.
+3. **Armazenamento EBS (Volume Raiz AL2023)**:
+   - 8 GB gp3: ~$0.08/GB-mês = **~$0.64/mês** (isento até 30 GB/mês dentro do AWS Free Tier geral de EBS).
+4. **CloudFront CDN**:
+   - Os primeiros **1 TB de transferência de saída** e **10.000.000 requisições HTTP/HTTPS por mês** são **permanentemente gratuitos** no AWS Free Tier do CloudFront.
+   - O tráfego de saída da EC2 para o CloudFront na mesma região (`us-east-1`) tem **custo zero** ($0.00/GB).
+5. **Armazenamento S3 (Artefato de Deploy)**:
+   - Tarball de ~50 KB: **< $0.01/mês**.
 
 > [!NOTE]
-> De acordo com as diretrizes operacionais, **nenhuma mutação de nuvem (`create-stack`, deploy) foi executada nesta etapa**. Quando a coordenação autorizar o provisionamento, o comando abaixo poderá ser utilizado com o perfil AWS configurado:
+> **Custo Total Estimado em Produção Demo:**
+> - Com `t4g.nano` sem descontos de compute: **~$7.26/mês** ($3.02 compute + $3.60 IPv4 + $0.64 EBS).
+> - Se a conta usufruir de Free Tier de compute e EBS: **~$3.60/mês** (referente ao IPv4 público).
+
+---
+
+## 4. Segurança de Origem em Múltiplas Camadas
+
+A arquitetura implementa proteção em duas camadas independentes para impedir acesso indevido ou bypass do CloudFront:
+
+```
+Internet / Usuário
+        │
+        │  HTTPS (TLS gerenciado CloudFront)
+        ▼
+┌──────────────────────────────────────────────────────────┐
+│ CloudFront CDN (dXXXXXX.cloudfront.net)                  │
+│  - Redirecionamento: redirect-to-https                   │
+│  - Cache Policy: CachingDisabled                         │
+│  - Origin Header: X-ResolveQA-Origin-Verify: <secret>    │
+└──────────────────────────┬───────────────────────────────┘
+                           │
+                           │  HTTP :8080 (Somente IPs do CloudFront)
+                           ▼
+┌──────────────────────────────────────────────────────────┐
+│ Camada 1: Security Group EC2 (BackendSecurityGroup)      │
+│  - Ingress TCP 8080 restrito a SourcePrefixListId:       │
+│    pl-3b927c52 (Managed Prefix List do CloudFront)       │
+│  - Bloqueia na borda qualquer IP direto da Internet      │
+└──────────────────────────┬───────────────────────────────┘
+                           │
+                           ▼
+┌──────────────────────────────────────────────────────────┐
+│ Camada 2: Handler de Aplicação (ProtectedIntakeServer)   │
+│  - scripts/run_server.py intercepta todas as rotas       │
+│  - Valida X-ResolveQA-Origin-Verify == <secret>          │
+│  - Se ausente ou inválido: retorna HTTP 403 Forbidden    │
+└──────────────────────────────────────────────────────────┘
+```
+
+1. **Camada de Rede (Security Group)**:
+   - O Security Group da EC2 não abre a porta 8080 para `0.0.0.0/0`.
+   - Utiliza `SourcePrefixListId: pl-3b927c52` (AWS Managed Prefix List para IPs de origem do CloudFront em `us-east-1`).
+2. **Camada de Aplicação (ProtectedIntakeRequestHandler)**:
+   - `scripts/run_server.py` implementa `ProtectedIntakeRequestHandler`, que intercepta todas as requisições (`GET`, `POST`).
+   - Se o token no cabeçalho `X-ResolveQA-Origin-Verify` não for fornecido ou for inválido, responde com `HTTP 403 Forbidden` (`{"error": "forbidden: missing or invalid origin verification header"}`).
+   - O segredo é gerado externamente com entropia criptográfica (`secrets.token_hex(32)`) e passado via parâmetro `OriginSecretHeader` com `NoEcho: true`.
+
+---
+
+## 5. Empacotamento Versionado e Bootstrap com Prontidão
+
+### 5.1 Eliminação da Dependência do Git Main
+A branch `main` oficial do repositório (`moouraajv/ResolveQA`) é atualmente docs-only (`e8ef46f`), não possuindo o código implementado nem `scripts/run_server.py`. Fazer `git clone main` em UserData causaria falha silenciosa de inicialização.
+
+Em vez disso:
+1. O script [`scripts/package_bundle.py`](file://.orchestration/ResolveQA/worktrees/backend-aws/scripts/package_bundle.py) empacota `src/` e `scripts/` em `dist/resolveqa-bundle.tar.gz` e calcula seu SHA-256;
+2. O artefato é enviado a um bucket S3 privado;
+3. A instância EC2 assume o perfil IAM mínimo [`BackendInstanceRole`](file://.orchestration/ResolveQA/worktrees/backend-aws/infra/aws/template.yaml), com permissão exclusiva `s3:GetObject` sobre o objeto;
+4. O `UserData` baixa o tarball e executa `echo "${ArtifactSha256} /tmp/resolveqa-bundle.tar.gz" | sha256sum -c -` antes da extração.
+
+### 5.2 Validação de Prontidão (CreationPolicy + cfn-signal)
+O template CloudFormation define uma `CreationPolicy` com timeout de 5 minutos na instância:
+- O `UserData` instala dependências, configura a unidade `systemd` e inicia o backend;
+- Realiza um loop local de verificação no endpoint `/health` enviando o cabeçalho secreto;
+- Apenas quando o serviço responde `HTTP 200`, executa `cfn-signal -e 0` para sinalizar sucesso à CloudFormation;
+- Se houver qualquer falha ou timeout, dispara `cfn-signal -e 1`, provocando o rollback seguro da stack.
+
+---
+
+## 6. Procedimento de Deploy e Verificação (Dry-Run e Execução)
+
+O script [`scripts/deploy_dry_run.sh`](file://.orchestration/ResolveQA/worktrees/backend-aws/scripts/deploy_dry_run.sh) automatiza as etapas prévias sem disparar mutações de nuvem:
 
 ```bash
+# 1. Empacotar artefato e validar template sem mutações
+./scripts/deploy_dry_run.sh <NOME_DO_BUCKET> resolveqa-demo-backend demo <VPC_ID> <SUBNET_ID>
+```
+
+### Comandos de Execução (Quando Autorizado pelo Operador):
+```bash
+# A. Upload do bundle versionado para o S3
+aws s3 cp dist/resolveqa-bundle.tar.gz s3://<NOME_DO_BUCKET>/builds/resolveqa-bundle-<SHA12>.tar.gz \
+   --region us-east-1
+
+# B. Criação da stack no CloudFormation
 aws cloudformation create-stack \
   --stack-name resolveqa-demo-backend \
   --template-body file://infra/aws/template.yaml \
@@ -121,26 +154,23 @@ aws cloudformation create-stack \
       ParameterKey=InstanceType,ParameterValue=t4g.nano \
       ParameterKey=VpcId,ParameterValue=<VPC_ID> \
       ParameterKey=SubnetId,ParameterValue=<SUBNET_ID> \
-   \
-  --region us-east-1
-```
+      ParameterKey=ArtifactBucket,ParameterValue=<NOME_DO_BUCKET> \
+      ParameterKey=ArtifactKey,ParameterValue=builds/resolveqa-bundle-<SHA12>.tar.gz \
+      ParameterKey=ArtifactSha256,ParameterValue=<SHA256_INTEGRAL> \
+      ParameterKey=OriginSecretHeader,ParameterValue=<SEGREDO_HEX_32> \
+  --capabilities CAPABILITY_IAM \
+   --region us-east-1
 
-Após a conclusão (`UPDATE_COMPLETE` ou `CREATE_COMPLETE`), os endpoints HTTPS estarão disponíveis nos outputs do CloudFormation:
-```bash
-aws cloudformation describe-stacks \
+# C. Aguardar prontidão (bloqueia até o cfn-signal emitir HTTP 200 OK)
+aws cloudformation wait stack-create-complete \
   --stack-name resolveqa-demo-backend \
-  --query "Stacks[0].Outputs" \
-   \
-  --region us-east-1
+   --region us-east-1
+
+# D. Execução dos smoke tests contra o endpoint público CloudFront
+CLOUDFRONT_URL=$(aws cloudformation describe-stacks \
+  --stack-name resolveqa-demo-backend \
+  --query "Stacks[0].Outputs[?OutputKey=='CloudFrontBaseUrl'].OutputValue" \
+  --output text  --region us-east-1)
+
+python3 scripts/smoke_test.py --base-url "${CLOUDFRONT_URL}" --origin-secret "<SEGREDO_HEX_32>"
 ```
-
----
-
-## 7. Limitações Conhecidas e Próximos Passos (Hackathon)
-
-1. **Armazenamento Volátil**:
-   - O estado do sistema reside exclusivamente na memória RAM da instância. Se o processo reiniciar ou a instância for reinicializada, todos os casos cadastrados e mensagens serão perdidos.
-2. **Jornada de Resolução Incompleta**:
-   - Esta entrega disponibiliza o canal de entrada (Intake / Chat) e verificação de saúde (`/health`).
-   - Para atender ao critério de vitória do hackathon, as próximas fases devem acoplar o **Agent Runner** a este runtime, conectando o processamento de fila para execução automática do pipeline:
-     `Intake -> Reprodução de Falha -> Geração de Patch -> Execução de Testes -> Abertura de PR no GitHub`.
