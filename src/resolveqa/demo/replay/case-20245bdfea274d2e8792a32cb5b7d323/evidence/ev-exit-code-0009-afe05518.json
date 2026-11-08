@@ -1,0 +1,1 @@
+{"test_path": "tests/test_repro_generated.py", "test_source_ref": "evidence/ev-test-source-0004-69e324f6.py", "exit_code": 1, "outcome": "red_on_assertion", "failing_assertion": "AssertionError: 200.0 != 180.0 : Expected total with 10.0% coupon to be 180.0, but got 200.0", "log_ref": "evidence/ev-test-log-0005-4614e742.log"}

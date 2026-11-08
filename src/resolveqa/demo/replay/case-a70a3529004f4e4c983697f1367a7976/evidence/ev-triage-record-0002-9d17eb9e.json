@@ -1,0 +1,8 @@
+{
+  "status": "needs_info",
+  "missing_fields": [
+    "expected",
+    "observed"
+  ],
+  "question_to_support": "Para reproduzir o problema com precisão, informe o valor da compra, o cupom utilizado, o valor esperado e o valor observado?"
+}

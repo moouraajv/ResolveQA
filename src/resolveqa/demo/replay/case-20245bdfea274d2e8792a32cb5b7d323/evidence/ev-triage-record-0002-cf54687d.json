@@ -1,0 +1,10 @@
+{
+  "status": "triaged",
+  "input": "compra de R$ 200,00 com cupom de 10%",
+  "expected": "R$ 180,00",
+  "observed": "R$ 200,00",
+  "suspect_files": [
+    "checkout.py"
+  ],
+  "confidence": 0.95
+}

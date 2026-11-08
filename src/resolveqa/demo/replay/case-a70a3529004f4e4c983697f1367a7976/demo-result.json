@@ -1,0 +1,44 @@
+{
+  "mode": "mock",
+  "channel": "Canal simulado",
+  "case": {
+    "case_id": "case-a70a3529004f4e4c983697f1367a7976",
+    "client_id": "client-demo",
+    "repo_ref": "demo-target",
+    "channel": "simulated_chat",
+    "report_text": "O checkout está estranho, o valor não bate.",
+    "state": "needs_info",
+    "terminal_reason": {
+      "question_to_support": "Para reproduzir o problema com precisão, informe o valor da compra, o cupom utilizado, o valor esperado e o valor observado?"
+    },
+    "attempts": {
+      "fix": 0,
+      "llm_calls": 0
+    },
+    "base_revision": null,
+    "fix_revision": null,
+    "evidence_ids": [
+      "ev-report-0001-e1b9a4b2",
+      "ev-triage-record-0003-03338533",
+      "ev-customer-message-0004-029c2485"
+    ],
+    "created_at": "2026-11-08T12:32:08Z",
+    "updated_at": "2026-11-08T12:32:08.747245+00:00"
+  },
+  "evidence_ids": [
+    "ev-report-0001-e1b9a4b2",
+    "ev-triage-record-0003-03338533",
+    "ev-customer-message-0004-029c2485"
+  ],
+  "delivery": null,
+  "message": {
+    "channel": "simulated_chat",
+    "text": "Andamento: ainda não concluímos a correção — Para reproduzir o problema com precisão, informe o valor da compra, o cupom utilizado, o valor esperado e o valor observado?.",
+    "sent_after_event_seq": 5
+  },
+  "customer_artifacts": {
+    "tracking": "acompanhamento.html",
+    "receipt": null,
+    "verification_code": null
+  }
+}

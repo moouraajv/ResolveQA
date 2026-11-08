@@ -1,0 +1,30 @@
+============================= test session starts ==============================
+platform linux -- Python 3.14.4, pytest-9.2.0, pluggy-1.7.0
+rootdir: /tmp/resolveqa_sandbox_1swg1n_9/workspace
+configfile: pyproject.toml
+collected 1 item
+
+tests/test_repro_generated.py F                                          [100%]
+
+=================================== FAILURES ===================================
+_____ TestCheckoutDefectReproduction.test_coupon_discount_applied_to_total _____
+
+self = <tests.test_repro_generated.TestCheckoutDefectReproduction testMethod=test_coupon_discount_applied_to_total>
+
+    def test_coupon_discount_applied_to_total(self) -> None:
+        subtotal = 200.0
+        coupon_percent = 10.0
+        expected_total = 180.0
+    
+        actual_total = calculate_total(subtotal, coupon_percent=coupon_percent)
+>       self.assertEqual(
+            actual_total,
+            expected_total,
+            f"Expected total with {coupon_percent}% coupon to be {expected_total}, but got {actual_total}",
+        )
+E       AssertionError: 200.0 != 180.0 : Expected total with 10.0% coupon to be 180.0, but got 200.0
+
+tests/test_repro_generated.py:16: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_repro_generated.py::TestCheckoutDefectReproduction::test_coupon_discount_applied_to_total
+============================== 1 failed in 0.13s ===============================

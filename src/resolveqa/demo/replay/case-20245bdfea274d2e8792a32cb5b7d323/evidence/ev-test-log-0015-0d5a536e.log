@@ -1,0 +1,11 @@
+============================= test session starts ==============================
+platform linux -- Python 3.14.4, pytest-9.2.0, pluggy-1.7.0
+rootdir: /tmp/resolveqa_sandbox_lorojnv8/workspace
+configfile: pyproject.toml
+testpaths: tests
+collected 5 items
+
+tests/test_checkout.py ....                                              [ 80%]
+tests/test_repro_generated.py .                                          [100%]
+
+============================== 5 passed in 0.08s ===============================

@@ -1,0 +1,21 @@
+{
+  "case_id": "case-20245bdfea274d2e8792a32cb5b7d323",
+  "label": "PR n\u00e3o publicado",
+  "kind": "local_package",
+  "auto_merge": false,
+  "files": [
+    "README.md",
+    "report.md",
+    "cause.md",
+    "diff.patch",
+    "before.log",
+    "after.log",
+    "suite.log",
+    "limits.json",
+    "verdict.json",
+    "CHANGELOG.md",
+    "technical_notes/case-20245bdfea274d2e8792a32cb5b7d323.md",
+    "kb_drafts/case-20245bdfea274d2e8792a32cb5b7d323.md"
+  ],
+  "approvers": []
+}

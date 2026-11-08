@@ -1,0 +1,3 @@
+# Causa
+
+Esperado: R$ 180,00; observado: R$ 200,00. Arquivos suspeitos: checkout.py. Correção proposta no diff; aprovação independente: verified.

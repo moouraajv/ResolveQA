@@ -1,0 +1,92 @@
+{
+  "mode": "mock",
+  "channel": "Canal simulado",
+  "case": {
+    "case_id": "case-20245bdfea274d2e8792a32cb5b7d323",
+    "client_id": "client-demo",
+    "repo_ref": "demo-target",
+    "channel": "simulated_chat",
+    "report_text": "Comprei R$ 200,00 no site, apliquei o cupom DESC10 de 10% e o total continuou R$ 200,00. Deveria ser R$ 180,00.",
+    "state": "verified",
+    "terminal_reason": null,
+    "attempts": {
+      "fix": 1,
+      "llm_calls": 2
+    },
+    "base_revision": "f54f980e114d8c62f20f718f667a56860090bb03aaf74f87a4d96ce742b5b1f1",
+    "fix_revision": "595ca88bfc372471ce230017b061a4ae2be8ec1e26896874172fc6bae0d15f70",
+    "evidence_ids": [
+      "ev-report-0001-96660360",
+      "ev-triage-record-0003-8edf009d",
+      "ev-test-source-0007-b5f1fa41",
+      "ev-test-log-0008-f937b406",
+      "ev-exit-code-0009-afe05518",
+      "ev-diff-0010-9fb485c4",
+      "ev-diff-0011-c32962e6",
+      "ev-verdict-0012-d02539df",
+      "ev-test-log-0013-d9447daf",
+      "ev-test-log-0014-7388778d",
+      "ev-test-log-0015-0d5a536e",
+      "diff",
+      "before",
+      "after",
+      "suite",
+      "cause",
+      "corrected_behavior",
+      "ev-pr-package-0016-b3368376",
+      "ev-customer-message-0017-313b53c6"
+    ],
+    "created_at": "2026-11-08T12:32:03Z",
+    "updated_at": "2026-11-08T12:32:08.586876+00:00"
+  },
+  "evidence_ids": [
+    "ev-report-0001-96660360",
+    "ev-triage-record-0003-8edf009d",
+    "ev-test-source-0007-b5f1fa41",
+    "ev-test-log-0008-f937b406",
+    "ev-exit-code-0009-afe05518",
+    "ev-diff-0010-9fb485c4",
+    "ev-diff-0011-c32962e6",
+    "ev-verdict-0012-d02539df",
+    "ev-test-log-0013-d9447daf",
+    "ev-test-log-0014-7388778d",
+    "ev-test-log-0015-0d5a536e",
+    "diff",
+    "before",
+    "after",
+    "suite",
+    "cause",
+    "corrected_behavior",
+    "ev-pr-package-0016-b3368376",
+    "ev-customer-message-0017-313b53c6"
+  ],
+  "delivery": {
+    "kind": "local_package",
+    "url_or_path": "/home/adminut/projetos/hackathon-converge-2026/malho-resolveqa/runs/case-20245bdfea274d2e8792a32cb5b7d323/delivery/pr-nao-publicado",
+    "label": "PR não publicado",
+    "evidence_refs": [
+      "delivery/pr-nao-publicado/README.md",
+      "delivery/pr-nao-publicado/report.md",
+      "delivery/pr-nao-publicado/cause.md",
+      "delivery/pr-nao-publicado/diff.patch",
+      "delivery/pr-nao-publicado/before.log",
+      "delivery/pr-nao-publicado/after.log",
+      "delivery/pr-nao-publicado/suite.log",
+      "delivery/pr-nao-publicado/limits.json",
+      "delivery/pr-nao-publicado/verdict.json",
+      "delivery/pr-nao-publicado/CHANGELOG.md",
+      "delivery/pr-nao-publicado/technical_notes/case-20245bdfea274d2e8792a32cb5b7d323.md",
+      "delivery/pr-nao-publicado/kb_drafts/case-20245bdfea274d2e8792a32cb5b7d323.md"
+    ]
+  },
+  "message": {
+    "channel": "simulated_chat",
+    "text": "Corrigimos o problema. Comportamento esperado agora: total agora R$ 180,00.",
+    "sent_after_event_seq": 27
+  },
+  "customer_artifacts": {
+    "tracking": "acompanhamento.html",
+    "receipt": "comprovante.txt",
+    "verification_code": "E75A-70D6-CBE7-9EEB"
+  }
+}
