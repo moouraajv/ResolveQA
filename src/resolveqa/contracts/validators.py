@@ -2,11 +2,18 @@
 
 from datetime import datetime, timezone
 from enum import Enum
+import json
+import posixpath
+import re
 from typing import Any, Optional, TypeVar
 
+from .enums import BlockedReason, CaseState, TERMINAL_STATES
 from .errors import ContractValidationError
 
 E = TypeVar("E", bound=Enum)
+
+_SHA256_RE = re.compile(r"[0-9a-f]{64}")
+_DRIVE_LETTER_RE = re.compile(r"^[a-zA-Z]:")
 
 
 def parse_enum(enum_cls: type[E], value: Any, field_name: str) -> E:
@@ -93,3 +100,97 @@ def require_utc_iso8601_timestamp(value: Any, field_name: str) -> str:
         )
 
     return value
+
+
+def require_posix_relative_path(value: Any, field_name: str) -> str:
+    """Validate that path is a relative POSIX path, normalized, rejecting .., backslash, drive letters, and empty."""
+    if not isinstance(value, str) or not value.strip():
+        raise ContractValidationError(
+            f"Field '{field_name}' must be a non-empty relative path string, got {value!r}."
+        )
+    if any(ord(c) < 32 for c in value):
+        raise ContractValidationError(
+            f"Field '{field_name}' must not contain null bytes or control characters: {value!r}."
+        )
+    if "\\" in value:
+        raise ContractValidationError(
+            f"Field '{field_name}' must use POSIX slashes only; backslash is forbidden: {value!r}."
+        )
+    if _DRIVE_LETTER_RE.match(value):
+        raise ContractValidationError(
+            f"Field '{field_name}' must not include a drive letter: {value!r}."
+        )
+    if value.startswith("/"):
+        raise ContractValidationError(
+            f"Field '{field_name}' must be a relative path, not absolute: {value!r}."
+        )
+    # Check for any parent traversal segments
+    raw_segments = value.split("/")
+    if any(segment == ".." for segment in raw_segments):
+        raise ContractValidationError(
+            f"Field '{field_name}' must not contain '..' parent traversal segments: {value!r}."
+        )
+
+    normalized = posixpath.normpath(value)
+    if normalized in (".", ""):
+        raise ContractValidationError(
+            f"Field '{field_name}' cannot be empty or '.': {value!r}."
+        )
+    if normalized.startswith("/"):
+        raise ContractValidationError(
+            f"Field '{field_name}' must be a relative path, not absolute: {normalized!r}."
+        )
+
+    normalized_segments = normalized.split("/")
+    if any(segment == ".." for segment in normalized_segments):
+        raise ContractValidationError(
+            f"Field '{field_name}' normalized path must not contain '..' traversal segments: {normalized!r}."
+        )
+    if any(_DRIVE_LETTER_RE.match(seg) for seg in normalized_segments) or _DRIVE_LETTER_RE.match(normalized):
+        raise ContractValidationError(
+            f"Field '{field_name}' must not contain drive letters: {normalized!r}."
+        )
+
+    return normalized
+
+
+def require_sha256_hex(value: Any, field_name: str) -> str:
+    """Validate that sha256 is exactly 64 lowercase hexadecimal characters."""
+    if not isinstance(value, str) or not _SHA256_RE.fullmatch(value):
+        raise ContractValidationError(
+            f"Field '{field_name}' must be exactly 64 lowercase hexadecimal characters, got {value!r}."
+        )
+    return value
+
+
+def validate_terminal_reason(state: CaseState, terminal_reason: Any) -> Any:
+    """Validate terminal_reason structured invariants by state (RFC-0001 §4)."""
+    from .terminal_reason import validate_terminal_reason as _vtr
+
+    return _vtr(state, terminal_reason)
+
+
+def require_tuple_of_strings(items: Any, field_name: str) -> tuple[str, ...]:
+    """Validate and convert a sequence into an immutable tuple of non-empty strings."""
+    if not isinstance(items, (list, tuple)):
+        raise ContractValidationError(
+            f"Field '{field_name}' must be a sequence of strings, got {type(items).__name__}."
+        )
+    return tuple(require_non_empty_str(item, f"{field_name}[{i}]") for i, item in enumerate(items))
+
+
+def decode_json_dict(json_str: Any) -> dict[str, Any]:
+    """Safely decode JSON string to a dictionary or raise ContractValidationError."""
+    if not isinstance(json_str, str):
+        raise ContractValidationError(
+            f"Expected JSON string, got {type(json_str).__name__}."
+        )
+    try:
+        data = json.loads(json_str)
+    except Exception as err:
+        raise ContractValidationError(f"Invalid JSON string: {err}") from err
+    if not isinstance(data, dict):
+        raise ContractValidationError(
+            f"Parsed JSON must be an object/dict, got {type(data).__name__}."
+        )
+    return data

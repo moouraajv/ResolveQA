@@ -10,15 +10,17 @@ from .enums import ChannelType, DeliveryKind, ReproOutcome, VerdictResult
 from .errors import ContractValidationError
 from .run_state import RunState
 from .validators import (
+    decode_json_dict,
     parse_enum,
     require_bool,
     require_int,
     require_non_empty_str,
     require_optional_non_empty_str,
+    require_tuple_of_strings,
 )
 
 
-@dataclass
+@dataclass(frozen=True)
 class ReportInput:
     """Input payload for case creation at Intake (RFC-0001 §3.3, RF-01)."""
     client_id: str
@@ -27,10 +29,10 @@ class ReportInput:
     report_text: str
 
     def __post_init__(self) -> None:
-        self.client_id = require_non_empty_str(self.client_id, "client_id")
-        self.repo_ref = require_non_empty_str(self.repo_ref, "repo_ref")
-        self.channel = parse_enum(ChannelType, self.channel, "channel")
-        self.report_text = require_non_empty_str(self.report_text, "report_text")
+        object.__setattr__(self, "client_id", require_non_empty_str(self.client_id, "client_id"))
+        object.__setattr__(self, "repo_ref", require_non_empty_str(self.repo_ref, "repo_ref"))
+        object.__setattr__(self, "channel", parse_enum(ChannelType, self.channel, "channel"))
+        object.__setattr__(self, "report_text", require_non_empty_str(self.report_text, "report_text"))
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -63,37 +65,34 @@ class ReportInput:
 
     @classmethod
     def from_json(cls, json_str: str) -> ReportInput:
-        return cls.from_dict(json.loads(json_str))
+        data = decode_json_dict(json_str)
+        return cls.from_dict(data)
 
 
-@dataclass
+@dataclass(frozen=True)
 class TriageRecord:
     """Structured analysis produced by Triage when data is sufficient (RFC-0001 §3.3, RF-03)."""
     input: str
     expected: str
     observed: str
-    suspect_files: list[str] = field(default_factory=list)
+    suspect_files: tuple[str, ...] = ()
     confidence: float = 1.0
 
     def __post_init__(self) -> None:
-        self.input = require_non_empty_str(self.input, "input")
-        self.expected = require_non_empty_str(self.expected, "expected")
-        self.observed = require_non_empty_str(self.observed, "observed")
+        object.__setattr__(self, "input", require_non_empty_str(self.input, "input"))
+        object.__setattr__(self, "expected", require_non_empty_str(self.expected, "expected"))
+        object.__setattr__(self, "observed", require_non_empty_str(self.observed, "observed"))
         if isinstance(self.confidence, bool) or not isinstance(self.confidence, (int, float)):
             raise ContractValidationError(
                 f"'confidence' must be a float or int, got {type(self.confidence).__name__}."
             )
-        self.confidence = float(self.confidence)
-        if not (0.0 <= self.confidence <= 1.0):
+        conf_val = float(self.confidence)
+        if not (0.0 <= conf_val <= 1.0):
             raise ContractValidationError("confidence must be between 0.0 and 1.0.")
-        if not isinstance(self.suspect_files, list):
-            raise ContractValidationError(
-                f"'suspect_files' must be a list, got {type(self.suspect_files).__name__}."
-            )
-        self.suspect_files = [
-            require_non_empty_str(f, f"suspect_files[{i}]")
-            for i, f in enumerate(self.suspect_files)
-        ]
+        object.__setattr__(self, "confidence", conf_val)
+        object.__setattr__(
+            self, "suspect_files", require_tuple_of_strings(self.suspect_files, "suspect_files")
+        )
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -122,33 +121,31 @@ class TriageRecord:
             input=data["input"],
             expected=data["expected"],
             observed=data["observed"],
-            suspect_files=data.get("suspect_files", []),
+            suspect_files=data["suspect_files"] if "suspect_files" in data else (),
             confidence=data.get("confidence", 1.0),
         )
 
     @classmethod
     def from_json(cls, json_str: str) -> TriageRecord:
-        return cls.from_dict(json.loads(json_str))
+        data = decode_json_dict(json_str)
+        return cls.from_dict(data)
 
 
-@dataclass
+@dataclass(frozen=True)
 class NeedsInfo:
     """Information request produced by Triage when report is insufficient (RFC-0001 §3.3, RF-03)."""
-    missing_fields: list[str]
+    missing_fields: tuple[str, ...]
     question_to_support: str
 
     def __post_init__(self) -> None:
-        self.question_to_support = require_non_empty_str(
-            self.question_to_support, "question_to_support"
+        object.__setattr__(
+            self,
+            "question_to_support",
+            require_non_empty_str(self.question_to_support, "question_to_support"),
         )
-        if not isinstance(self.missing_fields, list):
-            raise ContractValidationError(
-                f"'missing_fields' must be a list, got {type(self.missing_fields).__name__}."
-            )
-        self.missing_fields = [
-            require_non_empty_str(f, f"missing_fields[{i}]")
-            for i, f in enumerate(self.missing_fields)
-        ]
+        object.__setattr__(
+            self, "missing_fields", require_tuple_of_strings(self.missing_fields, "missing_fields")
+        )
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -174,10 +171,11 @@ class NeedsInfo:
 
     @classmethod
     def from_json(cls, json_str: str) -> NeedsInfo:
-        return cls.from_dict(json.loads(json_str))
+        data = decode_json_dict(json_str)
+        return cls.from_dict(data)
 
 
-@dataclass
+@dataclass(frozen=True)
 class ReproResult:
     """Output from Reproduction stage running the newly synthesized test (RFC-0001 §3.3, RF-04)."""
     test_path: str
@@ -188,12 +186,16 @@ class ReproResult:
     log_ref: str = ""
 
     def __post_init__(self) -> None:
-        self.test_path = require_non_empty_str(self.test_path, "test_path")
-        self.test_source_ref = require_non_empty_str(self.test_source_ref, "test_source_ref")
-        self.exit_code = require_int(self.exit_code, "exit_code")
-        self.outcome = parse_enum(ReproOutcome, self.outcome, "outcome")
-        self.failing_assertion = require_optional_non_empty_str(
-            self.failing_assertion, "failing_assertion"
+        object.__setattr__(self, "test_path", require_non_empty_str(self.test_path, "test_path"))
+        object.__setattr__(
+            self, "test_source_ref", require_non_empty_str(self.test_source_ref, "test_source_ref")
+        )
+        object.__setattr__(self, "exit_code", require_int(self.exit_code, "exit_code"))
+        object.__setattr__(self, "outcome", parse_enum(ReproOutcome, self.outcome, "outcome"))
+        object.__setattr__(
+            self,
+            "failing_assertion",
+            require_optional_non_empty_str(self.failing_assertion, "failing_assertion"),
         )
         if not isinstance(self.log_ref, str):
             raise ContractValidationError(
@@ -235,29 +237,25 @@ class ReproResult:
 
     @classmethod
     def from_json(cls, json_str: str) -> ReproResult:
-        return cls.from_dict(json.loads(json_str))
+        data = decode_json_dict(json_str)
+        return cls.from_dict(data)
 
 
-@dataclass
+@dataclass(frozen=True)
 class Patch:
     """Proposed fix patch produced by Fix stage (RFC-0001 §3.3, RF-05)."""
     diff_ref: str
-    files_changed: list[str]
+    files_changed: tuple[str, ...]
     touches_tests: bool = False
     touches_ci: bool = False
 
     def __post_init__(self) -> None:
-        self.diff_ref = require_non_empty_str(self.diff_ref, "diff_ref")
-        self.touches_tests = require_bool(self.touches_tests, "touches_tests")
-        self.touches_ci = require_bool(self.touches_ci, "touches_ci")
-        if not isinstance(self.files_changed, list):
-            raise ContractValidationError(
-                f"'files_changed' must be a list, got {type(self.files_changed).__name__}."
-            )
-        self.files_changed = [
-            require_non_empty_str(f, f"files_changed[{i}]")
-            for i, f in enumerate(self.files_changed)
-        ]
+        object.__setattr__(self, "diff_ref", require_non_empty_str(self.diff_ref, "diff_ref"))
+        object.__setattr__(self, "touches_tests", require_bool(self.touches_tests, "touches_tests"))
+        object.__setattr__(self, "touches_ci", require_bool(self.touches_ci, "touches_ci"))
+        object.__setattr__(
+            self, "files_changed", require_tuple_of_strings(self.files_changed, "files_changed")
+        )
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -287,10 +285,11 @@ class Patch:
 
     @classmethod
     def from_json(cls, json_str: str) -> Patch:
-        return cls.from_dict(json.loads(json_str))
+        data = decode_json_dict(json_str)
+        return cls.from_dict(data)
 
 
-@dataclass
+@dataclass(frozen=True)
 class TestRun:
     """Execution telemetry of a single test run within Verification (RFC-0001 §3.3)."""
     command: str
@@ -299,15 +298,16 @@ class TestRun:
     log_ref: str
 
     def __post_init__(self) -> None:
-        self.command = require_non_empty_str(self.command, "command")
-        self.exit_code = require_int(self.exit_code, "exit_code")
+        object.__setattr__(self, "command", require_non_empty_str(self.command, "command"))
+        object.__setattr__(self, "exit_code", require_int(self.exit_code, "exit_code"))
         if isinstance(self.duration_s, bool) or not isinstance(self.duration_s, (int, float)):
             raise ContractValidationError(
                 f"'duration_s' must be numeric, got {type(self.duration_s).__name__}."
             )
-        self.duration_s = float(self.duration_s)
-        if self.duration_s < 0:
+        dur = float(self.duration_s)
+        if dur < 0:
             raise ContractValidationError("'duration_s' must be non-negative.")
+        object.__setattr__(self, "duration_s", dur)
         if not isinstance(self.log_ref, str):
             raise ContractValidationError(
                 f"'log_ref' must be str, got {type(self.log_ref).__name__}."
@@ -344,10 +344,11 @@ class TestRun:
 
     @classmethod
     def from_json(cls, json_str: str) -> TestRun:
-        return cls.from_dict(json.loads(json_str))
+        data = decode_json_dict(json_str)
+        return cls.from_dict(data)
 
 
-@dataclass
+@dataclass(frozen=True)
 class Verdict:
     """Deterministic verdict produced by Verification stage (RFC-0001 §3.3, RF-06)."""
     before: TestRun
@@ -356,48 +357,39 @@ class Verdict:
     base_revision: str
     fix_revision: str
     result: VerdictResult
-    reasons: list[str] = field(default_factory=list)
+    reasons: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if isinstance(self.before, dict):
-            self.before = TestRun.from_dict(self.before)
+            object.__setattr__(self, "before", TestRun.from_dict(self.before))
         elif not isinstance(self.before, TestRun):
             raise ContractValidationError(
                 f"'before' must be TestRun or dict, got {type(self.before).__name__}."
             )
 
         if isinstance(self.after, dict):
-            self.after = TestRun.from_dict(self.after)
+            object.__setattr__(self, "after", TestRun.from_dict(self.after))
         elif not isinstance(self.after, TestRun):
             raise ContractValidationError(
                 f"'after' must be TestRun or dict, got {type(self.after).__name__}."
             )
 
         if isinstance(self.suite, dict):
-            self.suite = TestRun.from_dict(self.suite)
+            object.__setattr__(self, "suite", TestRun.from_dict(self.suite))
         elif not isinstance(self.suite, TestRun):
             raise ContractValidationError(
                 f"'suite' must be TestRun or dict, got {type(self.suite).__name__}."
             )
 
-        self.result = parse_enum(VerdictResult, self.result, "result")
+        parsed_result = parse_enum(VerdictResult, self.result, "result")
+        object.__setattr__(self, "result", parsed_result)
+        object.__setattr__(self, "reasons", require_tuple_of_strings(self.reasons, "reasons"))
 
-        if not isinstance(self.reasons, list):
-            raise ContractValidationError(
-                f"'reasons' must be a list, got {type(self.reasons).__name__}."
-            )
-
-        # Invariant checks for RFC-0001 §3.3
         self.validate()
 
     def validate(self) -> None:
-        """Validate Verdict invariants per RFC-0001 §3.3."""
+        """Validate Verdict invariants per RFC-0001 §3.3 and review rules."""
         if self.result == VerdictResult.VERIFIED:
-            # Verdict.result = verified exige:
-            # - before.exit_code != 0
-            # - after.exit_code == 0
-            # - suite.exit_code == 0
-            # - duas revisões registradas (base_revision e fix_revision não-vazias)
             if self.before.exit_code == 0:
                 raise ContractValidationError(
                     "Verified verdict requires before.exit_code != 0 (reproduction failing before fix)."
@@ -409,6 +401,14 @@ class Verdict:
             if self.suite.exit_code != 0:
                 raise ContractValidationError(
                     f"Verified verdict requires suite.exit_code == 0, got {self.suite.exit_code}."
+                )
+            require_non_empty_str(self.base_revision, "base_revision")
+            require_non_empty_str(self.fix_revision, "fix_revision")
+        elif self.result == VerdictResult.REJECTED:
+            # Rejected verdict requires at least one reason and two registered revisions
+            if len(self.reasons) == 0:
+                raise ContractValidationError(
+                    "Rejected verdict requires at least one explanatory reason in 'reasons'."
                 )
             require_non_empty_str(self.base_revision, "base_revision")
             require_non_empty_str(self.fix_revision, "fix_revision")
@@ -454,34 +454,32 @@ class Verdict:
             base_revision=data["base_revision"],
             fix_revision=data["fix_revision"],
             result=data["result"],
-            reasons=data.get("reasons", []),
+            reasons=data["reasons"] if "reasons" in data else (),
         )
 
     @classmethod
     def from_json(cls, json_str: str) -> Verdict:
-        return cls.from_dict(json.loads(json_str))
+        data = decode_json_dict(json_str)
+        return cls.from_dict(data)
 
 
-@dataclass
+@dataclass(frozen=True)
 class DeliveryResult:
     """Output of Delivery stage packaging the verified fix (RFC-0001 §3.3, RF-08)."""
     kind: DeliveryKind
     url_or_path: str
     label: Optional[str] = None
-    evidence_refs: list[str] = field(default_factory=list)
+    evidence_refs: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
-        self.kind = parse_enum(DeliveryKind, self.kind, "kind")
-        self.url_or_path = require_non_empty_str(self.url_or_path, "url_or_path")
-        self.label = require_optional_non_empty_str(self.label, "label")
-        if not isinstance(self.evidence_refs, list):
-            raise ContractValidationError(
-                f"'evidence_refs' must be a list, got {type(self.evidence_refs).__name__}."
-            )
-        self.evidence_refs = [
-            require_non_empty_str(r, f"evidence_refs[{i}]")
-            for i, r in enumerate(self.evidence_refs)
-        ]
+        object.__setattr__(self, "kind", parse_enum(DeliveryKind, self.kind, "kind"))
+        object.__setattr__(
+            self, "url_or_path", require_non_empty_str(self.url_or_path, "url_or_path")
+        )
+        object.__setattr__(self, "label", require_optional_non_empty_str(self.label, "label"))
+        object.__setattr__(
+            self, "evidence_refs", require_tuple_of_strings(self.evidence_refs, "evidence_refs")
+        )
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -506,15 +504,16 @@ class DeliveryResult:
             kind=data["kind"],
             url_or_path=data["url_or_path"],
             label=data.get("label"),
-            evidence_refs=data.get("evidence_refs", []),
+            evidence_refs=data["evidence_refs"] if "evidence_refs" in data else (),
         )
 
     @classmethod
     def from_json(cls, json_str: str) -> DeliveryResult:
-        return cls.from_dict(json.loads(json_str))
+        data = decode_json_dict(json_str)
+        return cls.from_dict(data)
 
 
-@dataclass
+@dataclass(frozen=True)
 class CustomerMessage:
     """Message returned to the customer channel (RFC-0001 §3.3, RF-09)."""
     channel: ChannelType
@@ -522,10 +521,12 @@ class CustomerMessage:
     sent_after_event_seq: int
 
     def __post_init__(self) -> None:
-        self.channel = parse_enum(ChannelType, self.channel, "channel")
-        self.text = require_non_empty_str(self.text, "text")
-        self.sent_after_event_seq = require_int(
-            self.sent_after_event_seq, "sent_after_event_seq", min_value=0
+        object.__setattr__(self, "channel", parse_enum(ChannelType, self.channel, "channel"))
+        object.__setattr__(self, "text", require_non_empty_str(self.text, "text"))
+        object.__setattr__(
+            self,
+            "sent_after_event_seq",
+            require_int(self.sent_after_event_seq, "sent_after_event_seq", min_value=0),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -557,10 +558,11 @@ class CustomerMessage:
 
     @classmethod
     def from_json(cls, json_str: str) -> CustomerMessage:
-        return cls.from_dict(json.loads(json_str))
+        data = decode_json_dict(json_str)
+        return cls.from_dict(data)
 
 
-@dataclass
+@dataclass(frozen=True)
 class ExecResult:
     """Sandbox execution outcome (RFC-0001 §3.3, RNF-01)."""
     exit_code: int
@@ -569,7 +571,7 @@ class ExecResult:
     timed_out: bool = False
 
     def __post_init__(self) -> None:
-        self.exit_code = require_int(self.exit_code, "exit_code")
+        object.__setattr__(self, "exit_code", require_int(self.exit_code, "exit_code"))
         if not isinstance(self.stdout_ref, str):
             raise ContractValidationError(
                 f"'stdout_ref' must be str, got {type(self.stdout_ref).__name__}."
@@ -578,7 +580,7 @@ class ExecResult:
             raise ContractValidationError(
                 f"'stderr_ref' must be str, got {type(self.stderr_ref).__name__}."
             )
-        self.timed_out = require_bool(self.timed_out, "timed_out")
+        object.__setattr__(self, "timed_out", require_bool(self.timed_out, "timed_out"))
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -608,10 +610,11 @@ class ExecResult:
 
     @classmethod
     def from_json(cls, json_str: str) -> ExecResult:
-        return cls.from_dict(json.loads(json_str))
+        data = decode_json_dict(json_str)
+        return cls.from_dict(data)
 
 
-@dataclass
+@dataclass(frozen=True)
 class LLMResult:
     """Normalized response from LLM adapter (RFC-0001 §3.3, RNF-03)."""
     content: str
@@ -622,12 +625,16 @@ class LLMResult:
     mock: bool = False
 
     def __post_init__(self) -> None:
-        self.content = require_non_empty_str(self.content, "content")
-        self.tokens_in = require_int(self.tokens_in, "tokens_in", min_value=0)
-        self.tokens_out = require_int(self.tokens_out, "tokens_out", min_value=0)
-        self.provider = require_non_empty_str(self.provider, "provider")
-        self.model = require_non_empty_str(self.model, "model")
-        self.mock = require_bool(self.mock, "mock")
+        object.__setattr__(self, "content", require_non_empty_str(self.content, "content"))
+        object.__setattr__(
+            self, "tokens_in", require_int(self.tokens_in, "tokens_in", min_value=0)
+        )
+        object.__setattr__(
+            self, "tokens_out", require_int(self.tokens_out, "tokens_out", min_value=0)
+        )
+        object.__setattr__(self, "provider", require_non_empty_str(self.provider, "provider"))
+        object.__setattr__(self, "model", require_non_empty_str(self.model, "model"))
+        object.__setattr__(self, "mock", require_bool(self.mock, "mock"))
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -664,7 +671,8 @@ class LLMResult:
 
     @classmethod
     def from_json(cls, json_str: str) -> LLMResult:
-        return cls.from_dict(json.loads(json_str))
+        data = decode_json_dict(json_str)
+        return cls.from_dict(data)
 
 
 # Stage Component Protocols (RFC-0001 §3.3)

@@ -1,6 +1,7 @@
 """Contracts package for ResolveQA (RFC-0001 §3)."""
 
 from .enums import (
+    BlockedReason,
     CaseState,
     ChannelType,
     DeliveryKind,
@@ -15,6 +16,12 @@ from .errors import ContractValidationError
 from .events import Event, ReplayRef
 from .evidence import Evidence
 from .run_state import Attempts, RunState
+from .terminal_reason import (
+    BlockedTerminalReason,
+    InfraErrorTerminalReason,
+    NeedsInfoTerminalReason,
+    TerminalReason,
+)
 from .stages import (
     CustomerMessage,
     DeliveryResult,
@@ -40,6 +47,7 @@ from .stages import (
 
 __all__ = [
     # Enums & Constants
+    "BlockedReason",
     "CaseState",
     "ChannelType",
     "DeliveryKind",
@@ -54,6 +62,10 @@ __all__ = [
     # Core Models
     "Attempts",
     "RunState",
+    "BlockedTerminalReason",
+    "NeedsInfoTerminalReason",
+    "InfraErrorTerminalReason",
+    "TerminalReason",
     "Event",
     "ReplayRef",
     "Evidence",

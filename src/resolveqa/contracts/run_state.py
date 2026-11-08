@@ -6,26 +6,37 @@ import json
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
-from .enums import CaseState, ChannelType, TERMINAL_STATES
+from .enums import CaseState, ChannelType
 from .errors import ContractValidationError
+from .terminal_reason import (
+    BlockedTerminalReason,
+    InfraErrorTerminalReason,
+    NeedsInfoTerminalReason,
+    TerminalReason,
+    validate_terminal_reason,
+)
 from .validators import (
+    decode_json_dict,
     parse_enum,
     require_int,
     require_non_empty_str,
     require_optional_non_empty_str,
+    require_tuple_of_strings,
     require_utc_iso8601_timestamp,
 )
 
 
-@dataclass
+@dataclass(frozen=True)
 class Attempts:
     """Execution attempts counters (RNF-03)."""
     fix: int = 0
     llm_calls: int = 0
 
     def __post_init__(self) -> None:
-        self.fix = require_int(self.fix, "fix", min_value=0)
-        self.llm_calls = require_int(self.llm_calls, "llm_calls", min_value=0)
+        object.__setattr__(self, "fix", require_int(self.fix, "fix", min_value=0))
+        object.__setattr__(
+            self, "llm_calls", require_int(self.llm_calls, "llm_calls", min_value=0)
+        )
 
     def to_dict(self) -> dict[str, int]:
         return {
@@ -45,7 +56,7 @@ class Attempts:
         )
 
 
-@dataclass
+@dataclass(frozen=True)
 class RunState:
     """Core state machine entity tracking a case run (RFC-0001 §3.1)."""
     case_id: str
@@ -56,66 +67,55 @@ class RunState:
     state: CaseState
     created_at: str
     updated_at: str
-    terminal_reason: Optional[str] = None
+    terminal_reason: Optional[TerminalReason] = None
     attempts: Attempts = field(default_factory=Attempts)
     base_revision: Optional[str] = None
     fix_revision: Optional[str] = None
-    evidence_ids: list[str] = field(default_factory=list)
+    evidence_ids: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
-        self.case_id = require_non_empty_str(self.case_id, "case_id")
-        self.client_id = require_non_empty_str(self.client_id, "client_id")
-        self.repo_ref = require_non_empty_str(self.repo_ref, "repo_ref")
-        self.channel = parse_enum(ChannelType, self.channel, "channel")
-        self.report_text = require_non_empty_str(self.report_text, "report_text")
-        self.state = parse_enum(CaseState, self.state, "state")
-        self.created_at = require_utc_iso8601_timestamp(self.created_at, "created_at")
-        self.updated_at = require_utc_iso8601_timestamp(self.updated_at, "updated_at")
-        self.terminal_reason = require_optional_non_empty_str(
-            self.terminal_reason, "terminal_reason"
+        object.__setattr__(self, "case_id", require_non_empty_str(self.case_id, "case_id"))
+        object.__setattr__(self, "client_id", require_non_empty_str(self.client_id, "client_id"))
+        object.__setattr__(self, "repo_ref", require_non_empty_str(self.repo_ref, "repo_ref"))
+        object.__setattr__(self, "channel", parse_enum(ChannelType, self.channel, "channel"))
+        object.__setattr__(self, "report_text", require_non_empty_str(self.report_text, "report_text"))
+        parsed_state = parse_enum(CaseState, self.state, "state")
+        object.__setattr__(self, "state", parsed_state)
+        object.__setattr__(
+            self, "created_at", require_utc_iso8601_timestamp(self.created_at, "created_at")
         )
-        self.base_revision = require_optional_non_empty_str(
-            self.base_revision, "base_revision"
+        object.__setattr__(
+            self, "updated_at", require_utc_iso8601_timestamp(self.updated_at, "updated_at")
         )
-        self.fix_revision = require_optional_non_empty_str(
-            self.fix_revision, "fix_revision"
+        validated_reason = validate_terminal_reason(parsed_state, self.terminal_reason)
+        object.__setattr__(self, "terminal_reason", validated_reason)
+
+        object.__setattr__(
+            self, "base_revision", require_optional_non_empty_str(self.base_revision, "base_revision")
+        )
+        object.__setattr__(
+            self, "fix_revision", require_optional_non_empty_str(self.fix_revision, "fix_revision")
         )
 
         if isinstance(self.attempts, dict):
-            self.attempts = Attempts.from_dict(self.attempts)
+            object.__setattr__(self, "attempts", Attempts.from_dict(self.attempts))
         elif not isinstance(self.attempts, Attempts):
             raise ContractValidationError(
                 f"'attempts' must be an Attempts instance or dict, got {type(self.attempts).__name__}."
             )
 
-        if not isinstance(self.evidence_ids, list):
-            raise ContractValidationError(
-                f"'evidence_ids' must be a list, got {type(self.evidence_ids).__name__}."
-            )
-        self.evidence_ids = [
-            require_non_empty_str(eid, f"evidence_ids[{i}]")
-            for i, eid in enumerate(self.evidence_ids)
-        ]
-
-        self.validate()
-
-    def validate(self) -> None:
-        """Validate RunState invariants."""
-        if self.state in TERMINAL_STATES and self.state != CaseState.VERIFIED:
-            if self.terminal_reason is None:
-                raise ContractValidationError(
-                    f"Terminal state '{self.state.value}' different from verified requires terminal_reason."
-                )
+        object.__setattr__(
+            self, "evidence_ids", require_tuple_of_strings(self.evidence_ids, "evidence_ids")
+        )
 
     def transition_to(
         self,
         new_state: CaseState | str,
         updated_at: str,
-        terminal_reason: Optional[str] = None,
+        terminal_reason: Optional[TerminalReason | dict[str, Any]] = None,
     ) -> RunState:
-        """Return an updated RunState in a new state with invariants validated."""
+        """Return a brand new RunState instance in the new state without mutating self."""
         parsed_new_state = parse_enum(CaseState, new_state, "state")
-        reason_to_use = terminal_reason if terminal_reason is not None else self.terminal_reason
         return RunState(
             case_id=self.case_id,
             client_id=self.client_id,
@@ -125,11 +125,11 @@ class RunState:
             state=parsed_new_state,
             created_at=self.created_at,
             updated_at=updated_at,
-            terminal_reason=reason_to_use,
-            attempts=Attempts(fix=self.attempts.fix, llm_calls=self.attempts.llm_calls),
+            terminal_reason=terminal_reason,
+            attempts=self.attempts,
             base_revision=self.base_revision,
             fix_revision=self.fix_revision,
-            evidence_ids=list(self.evidence_ids),
+            evidence_ids=self.evidence_ids,
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -140,7 +140,11 @@ class RunState:
             "channel": self.channel.value,
             "report_text": self.report_text,
             "state": self.state.value,
-            "terminal_reason": self.terminal_reason,
+            "terminal_reason": (
+                self.terminal_reason.to_dict()
+                if self.terminal_reason is not None
+                else None
+            ),
             "attempts": self.attempts.to_dict(),
             "base_revision": self.base_revision,
             "fix_revision": self.fix_revision,
@@ -191,13 +195,10 @@ class RunState:
             attempts=attempts,
             base_revision=data.get("base_revision"),
             fix_revision=data.get("fix_revision"),
-            evidence_ids=data.get("evidence_ids", []),
+            evidence_ids=data["evidence_ids"] if "evidence_ids" in data else (),
         )
 
     @classmethod
     def from_json(cls, json_str: str) -> RunState:
-        try:
-            parsed = json.loads(json_str)
-        except Exception as err:
-            raise ContractValidationError(f"Invalid JSON string: {err}") from err
-        return cls.from_dict(parsed)
+        data = decode_json_dict(json_str)
+        return cls.from_dict(data)
