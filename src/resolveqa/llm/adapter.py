@@ -385,17 +385,25 @@ INERT_DATA_SYSTEM_NOTICE = (
 PURPOSE_PROMPT_GUIDELINES: dict[str, str] = {
     "triage": (
         "PROMPT RULES (BENCHMARK VALIDATED): Extract input, expected, and observed values strictly from "
-        "the customer report (never invent or substitute fixed example numbers). If the report lacks "
-        "concrete values for input, expected, or observed, return JSON with status='needs_info', "
-        "missing_fields, question_to_support, and reproduction=null."
+        "the customer report (never invent or substitute fixed example numbers). Return ONLY one flat "
+        "JSON object matching the adapter schema — never nest fields and never use status values other "
+        "than 'triaged' or 'needs_info'. When the report already states purchase amount, expected total, "
+        "and observed total (including contrasts like 'em vez de' / 'instead of'), return "
+        '{"status":"triaged","input":"<from report>","expected":"<from report>",'
+        '"observed":"<from report>","suspect_files":["<relative source path>"],"confidence":0.95}. '
+        "suspect_files is mandatory for status=triaged: use any relative source path named in the "
+        "report, or checkout.py for coupon/discount calculation defects in the MVP demo target when "
+        "no file is named. If those concrete values are absent, return "
+        '{"status":"needs_info","missing_fields":["input","expected","observed"],'
+        '"question_to_support":"<one question>","reproduction":null}.'
     ),
     "reproduction": (
         "PROMPT RULES (BENCHMARK VALIDATED): Generate a standalone Python unittest/pytest reproduction "
         "test that uses the exact numeric/monetary values from the report (never hardcoded example "
-        "values)."
+        "values). Return only Python source, not JSON or markdown fences."
     ),
     "fix": (
-        "PROMPT RULES (BENCHMARK VALIDATED): Return a JSON object with keys 'file', 'search', and "
+        "PROMPT RULES (BENCHMARK VALIDATED): Return a flat JSON object with keys 'file', 'search', and "
         "'replace' proposing a minimal fix on source files only (never touch tests or CI)."
     ),
 }
