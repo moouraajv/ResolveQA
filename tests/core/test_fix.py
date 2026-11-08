@@ -122,6 +122,41 @@ def test_requires_reproduced_assertion(inputs, outcome, exit_code):
         FixStage(root).run(case, triage, replace(repro, outcome=outcome, exit_code=exit_code))
 
 
+def test_rejects_red_without_failing_assertion_before_writing(inputs):
+    root, case, triage, repro = inputs
+    with pytest.raises(PatchRejected, match="reproduction"):
+        FixStage(root).run(
+            case,
+            triage,
+            replace(repro, outcome=ReproOutcome.RED_ON_ASSERTION, exit_code=1, failing_assertion=None),
+        )
+    assert not (root / "runs").exists()
+
+
+def test_patch_rejected_is_contract_validation_error():
+    from resolveqa.contracts import ContractValidationError
+
+    assert issubclass(PatchRejected, ContractValidationError)
+
+
+def test_preserves_crlf_line_endings(inputs):
+    root, case, triage, repro = inputs
+    path = root / case.repo_ref / "checkout.py"
+    lf = path.read_bytes()
+    assert b"\r\n" not in lf
+    path.write_bytes(lf.replace(b"\n", b"\r\n"))
+    before = path.read_bytes()
+    assert before.count(b"\r\n") == lf.count(b"\n")
+    patch = FixStage(root).run(case, triage, repro)
+    after = path.read_bytes()
+    # Source repo copy is untouched; the isolated repair must not leak CRLF→LF.
+    assert after == before
+    diff = (root / patch.diff_ref).read_bytes()
+    assert b"float(subtotal) - discount" in diff
+    # Diff should not rewrite every line solely due to newline conversion.
+    assert diff.count(b"\n") < 20
+
+
 def test_rejects_unknown_cause_and_unrelated_triage(inputs):
     root, case, triage, repro = inputs
     with pytest.raises(PatchRejected, match="Triage"):

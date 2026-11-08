@@ -18,12 +18,25 @@ from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
 
-from resolveqa.contracts import Evidence, EvidenceKind, Patch, ReproOutcome, ReproResult, RunState, TriageRecord
+from resolveqa.contracts import (
+    ContractValidationError,
+    Evidence,
+    EvidenceKind,
+    Patch,
+    ReproOutcome,
+    ReproResult,
+    RunState,
+    TriageRecord,
+)
 from resolveqa.sandbox.executor import LocalSandbox, redact_secrets
 
 
-class PatchRejected(ValueError):
-    """No admissible patch can be proposed for this case."""
+class PatchRejected(ContractValidationError):
+    """No admissible patch can be proposed for this case.
+
+    Subclasses ContractValidationError so the orchestrator terminalizes as
+    blocked / patch_rejected instead of infra_error.
+    """
 
 
 class FixStage:
@@ -50,7 +63,10 @@ class FixStage:
     @staticmethod
     def _repair(workspace: Path) -> None:
         path = workspace / "checkout.py"
-        source = path.read_text(encoding="utf-8")
+        # Decode raw bytes (no universal-newline translation) so CRLF targets
+        # keep unrelated line endings; only the expression bytes are replaced.
+        raw = path.read_bytes()
+        source = raw.decode("utf-8")
         tree = ast.parse(source)
         functions = [node for node in tree.body if isinstance(node, ast.FunctionDef)
                      and node.name == "calculate_total"]
@@ -65,11 +81,10 @@ class FixStage:
                 or ast.dump(body[-1]) != ast.dump(expected_return)):
             raise PatchRejected("Known missing-discount cause not found")
         node = body[-1].value.args[0]
-        # AST offsets are UTF-8 byte offsets, not character indices.
+        # AST offsets are UTF-8 byte offsets into the decoded source string.
         lines = source.encode("utf-8").splitlines(keepends=True)
         start = sum(map(len, lines[:node.lineno - 1])) + node.col_offset
         end = sum(map(len, lines[:node.end_lineno - 1])) + node.end_col_offset
-        raw = source.encode("utf-8")
         path.write_bytes(raw[:start] + b"float(subtotal) - discount" + raw[end:])
 
     @staticmethod
@@ -91,7 +106,11 @@ class FixStage:
                 or name in {"conftest.py", "pytest.ini", "tox.ini", "pyproject.toml", "setup.cfg", "jenkinsfile", "azure-pipelines.yml", ".travis.yml"})
 
     def run(self, case: RunState, triage: TriageRecord, repro: ReproResult) -> Patch:
-        if repro.outcome != ReproOutcome.RED_ON_ASSERTION or repro.exit_code == 0:
+        if (
+            repro.outcome != ReproOutcome.RED_ON_ASSERTION
+            or repro.exit_code == 0
+            or not (repro.failing_assertion or "").strip()
+        ):
             raise PatchRejected("Fix requires a reproduction failing on the reported assertion")
         if not re.fullmatch(r"[A-Za-z0-9_-]+", case.case_id):
             raise PatchRejected("Unsafe case_id")
