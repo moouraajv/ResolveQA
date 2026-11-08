@@ -1,13 +1,17 @@
 """Local demo HTTP surface for Intake using the Python standard library only.
 
 Routes (ephemeral / local-demo; no auth, no cloud):
-  GET  /health              -> JSON ok
-  GET  /form                -> HTML form (report fields treated as data)
-  POST /api/cases           -> JSON create {client_id, repo_ref, report_text}
-  GET  /api/cases/<case_id> -> JSON fetch by id
-  POST /form/cases          -> application/x-www-form-urlencoded create
+  GET  /health                 -> JSON ok
+  GET  /form                   -> HTML form (report fields treated as data)
+  POST /api/cases              -> JSON create {client_id, repo_ref, report_text} channel=api
+  GET  /api/cases/<case_id>    -> JSON fetch by id
+  POST /form/cases             -> application/x-www-form-urlencoded create channel=form
+  GET  /chat                   -> simulated messaging UI (permanent "Canal simulado" label)
+  POST /chat/messages          -> form create via Intake channel=simulated_chat
+  POST /api/chat/messages      -> JSON create via Intake channel=simulated_chat
 
 Missing or blank client_id is refused with HTTP 400 and a clear error message.
+API/form behavior from issue #13 is preserved; chat reuses the same Intake instance.
 """
 
 from __future__ import annotations
@@ -20,6 +24,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Optional
 from urllib.parse import parse_qs
 
+from resolveqa.channel import build_chat_html, submit_simulated_chat_report
 from resolveqa.contracts import ChannelType, ContractValidationError, ReportInput, RunState
 from resolveqa.intake import Intake
 
@@ -141,6 +146,11 @@ class IntakeRequestHandler(BaseHTTPRequestHandler):
             self._write(HTTPStatus.OK, page, "text/html; charset=utf-8")
             return
 
+        if path == "/chat":
+            page = build_chat_html().encode("utf-8")
+            self._write(HTTPStatus.OK, page, "text/html; charset=utf-8")
+            return
+
         match = _CASE_ID_RE.match(path)
         if match:
             case_id = match.group(1)
@@ -175,6 +185,12 @@ class IntakeRequestHandler(BaseHTTPRequestHandler):
             return
         if path == "/form/cases":
             self._handle_form_create(raw)
+            return
+        if path == "/api/chat/messages":
+            self._handle_chat_api_create(raw)
+            return
+        if path == "/chat/messages":
+            self._handle_chat_form_create(raw)
             return
 
         status, body, ctype = _error("not found", HTTPStatus.NOT_FOUND)
@@ -265,6 +281,102 @@ class IntakeRequestHandler(BaseHTTPRequestHandler):
             return
 
         page = build_form_html(case=case).encode("utf-8")
+        self._write(HTTPStatus.CREATED, page, "text/html; charset=utf-8")
+
+    def _handle_chat_api_create(self, raw: bytes) -> None:
+        if not raw:
+            status, body, ctype = _error("JSON body is required")
+            self._write(status, body, ctype)
+            return
+        try:
+            payload = json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            status, body, ctype = _error("invalid JSON body")
+            self._write(status, body, ctype)
+            return
+        if not isinstance(payload, dict):
+            status, body, ctype = _error("JSON body must be an object")
+            self._write(status, body, ctype)
+            return
+
+        client_id = _require_client_id(payload.get("client_id"))
+        if client_id is None:
+            status, body, ctype = _error(
+                "client_id is required and must be a non-empty string; request refused."
+            )
+            self._write(status, body, ctype)
+            return
+
+        try:
+            case = submit_simulated_chat_report(
+                self.intake,
+                client_id=client_id,
+                repo_ref=payload.get("repo_ref"),
+                report_text=payload.get("report_text"),
+            )
+        except ContractValidationError as err:
+            status, body, ctype = _error(str(err))
+            self._write(status, body, ctype)
+            return
+
+        status, body, ctype = _json_bytes(
+            {
+                "case": case.to_dict(),
+                "channel_label": "Canal simulado",
+                "storage": "ephemeral-in-memory",
+                "note": "local demo only; no durable persistence; no invented progress",
+            },
+            status=HTTPStatus.CREATED,
+        )
+        self._write(status, body, ctype)
+
+    def _handle_chat_form_create(self, raw: bytes) -> None:
+        try:
+            text = raw.decode("utf-8")
+        except UnicodeDecodeError:
+            page = build_chat_html(
+                notice="Corpo do formulário inválido (encoding)."
+            ).encode("utf-8")
+            self._write(HTTPStatus.BAD_REQUEST, page, "text/html; charset=utf-8")
+            return
+
+        fields = parse_qs(text, keep_blank_values=True)
+        client_raw = fields.get("client_id", [None])[0]
+        client_id = _require_client_id(client_raw)
+        repo_ref = (fields.get("repo_ref", [""])[0] or "").strip()
+        report_text = fields.get("report_text", [""])[0] or ""
+
+        if client_id is None:
+            page = build_chat_html(
+                notice="client_id is required and must be a non-empty string; request refused.",
+                preset_repo_ref=repo_ref,
+            ).encode("utf-8")
+            self._write(HTTPStatus.BAD_REQUEST, page, "text/html; charset=utf-8")
+            return
+
+        try:
+            case = submit_simulated_chat_report(
+                self.intake,
+                client_id=client_id,
+                repo_ref=repo_ref,
+                report_text=report_text,
+            )
+        except ContractValidationError as err:
+            page = build_chat_html(
+                notice=str(err),
+                outbound_text=report_text or None,
+                preset_client_id=client_id,
+                preset_repo_ref=repo_ref,
+            ).encode("utf-8")
+            self._write(HTTPStatus.BAD_REQUEST, page, "text/html; charset=utf-8")
+            return
+
+        page = build_chat_html(
+            outbound_text=case.report_text,
+            case=case,
+            preset_client_id=case.client_id,
+            preset_repo_ref=case.repo_ref,
+        ).encode("utf-8")
         self._write(HTTPStatus.CREATED, page, "text/html; charset=utf-8")
 
 
