@@ -343,6 +343,37 @@ class TestIntakeHTTP(unittest.TestCase):
                 self.assertEqual(resp.status, 200)
                 self.assertEqual(resp.headers.get("Access-Control-Allow-Origin"), allowed)
 
+    def test_advance_updates_store_and_returns_case(self) -> None:
+        with _LiveServer() as live:
+            status, created = _http_json(
+                "POST",
+                f"{live.base}/api/cases",
+                {
+                    "client_id": "client-demo",
+                    "repo_ref": "demo-target",
+                    "report_text": "Cupom não aplica desconto.",
+                },
+            )
+            self.assertEqual(status, 201)
+            case_id = created["case"]["case_id"]
+            status_adv, advanced = _http_json(
+                "POST",
+                f"{live.base}/api/cases/{case_id}/advance",
+                {},
+            )
+            self.assertEqual(status_adv, 200)
+            self.assertEqual(advanced["case"]["state"], "triaging")
+            status_get, fetched = _http_json("GET", f"{live.base}/api/cases/{case_id}")
+            self.assertEqual(status_get, 200)
+            self.assertEqual(fetched["case"]["state"], "triaging")
+            status_jump, jumped = _http_json(
+                "POST",
+                f"{live.base}/api/cases/{case_id}/advance",
+                {"to_state": "fixed"},
+            )
+            self.assertEqual(status_jump, 200)
+            self.assertEqual(jumped["case"]["state"], "fixed")
+
 
 if __name__ == "__main__":
     unittest.main()

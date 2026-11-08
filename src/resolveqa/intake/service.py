@@ -11,9 +11,22 @@ from resolveqa.contracts import (
     IntakeStage,
     ReportInput,
     RunState,
+    TERMINAL_STATES,
 )
 
 from .store import EphemeralCaseStore
+
+# Happy-path demo progression for operator "advance" controls (pitch / Quadro).
+HAPPY_PATH_NEXT: dict[CaseState, CaseState] = {
+    CaseState.CREATED: CaseState.TRIAGING,
+    CaseState.TRIAGING: CaseState.TRIAGED,
+    CaseState.TRIAGED: CaseState.REPRODUCING,
+    CaseState.REPRODUCING: CaseState.REPRODUCED,
+    CaseState.REPRODUCED: CaseState.FIXING,
+    CaseState.FIXING: CaseState.FIXED,
+    CaseState.FIXED: CaseState.VERIFYING,
+    CaseState.VERIFYING: CaseState.VERIFIED,
+}
 
 
 def utc_now_iso() -> str:
@@ -58,6 +71,47 @@ class Intake:
         if not isinstance(case_id, str) or not case_id.strip():
             return None
         return self.store.get(case_id.strip())
+
+    def advance(
+        self,
+        case_id: str,
+        *,
+        to_state: CaseState | str | None = None,
+    ) -> tuple[RunState, CaseState]:
+        """Advance a case along the happy path (or to an explicit state) and persist it.
+
+        Returns ``(updated_case, previous_state)``. This is an operator/demo control:
+        it updates the ephemeral store so the Quadro stays synchronized with the API.
+        It does not run triage/fix/verification stages.
+        """
+        case = self.get(case_id)
+        if case is None:
+            raise ContractValidationError(f"case_id not found: {case_id}")
+        previous = case.state
+        if previous in TERMINAL_STATES:
+            raise ContractValidationError(
+                f"case {case_id} is already terminal ({previous.value})"
+            )
+        if to_state is None:
+            nxt = HAPPY_PATH_NEXT.get(previous)
+            if nxt is None:
+                raise ContractValidationError(
+                    f"no happy-path advance from state {previous.value}"
+                )
+            target = nxt
+        else:
+            if isinstance(to_state, str):
+                try:
+                    target = CaseState(to_state.strip())
+                except ValueError as err:
+                    raise ContractValidationError(str(err)) from err
+            else:
+                target = to_state
+            if target == previous:
+                raise ContractValidationError("to_state must differ from current state")
+        updated = case.transition_to(target, updated_at=utc_now_iso())
+        self.store.put(updated)
+        return updated, previous
 
 
 # Structural check against the frozen contracts protocol.
