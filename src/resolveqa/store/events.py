@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 from resolveqa.contracts import (
@@ -95,10 +94,38 @@ class EventStore:
         return target
 
     def events_path(self, case_id: str) -> Path:
-        return self.case_dir(case_id) / "events.jsonl"
+        """Return events.jsonl path after rejecting symlinks and escapes."""
+        return self._events_file(case_id)
+
+    def _events_file(self, case_id: str) -> Path:
+        case_dir = self.case_dir(case_id)
+        path = case_dir / "events.jsonl"
+        if path.is_symlink():
+            raise EventStoreError(
+                f"events.jsonl must not be a symlink for case_id={case_id!r}"
+            )
+        if path.exists():
+            resolved = path.resolve()
+            try:
+                resolved.relative_to(self.runs_root)
+            except ValueError as err:
+                raise EventStoreError(
+                    f"events.jsonl resolves outside runs root for case_id={case_id!r}"
+                ) from err
+            if resolved.name != "events.jsonl":
+                raise EventStoreError(
+                    f"events.jsonl resolved to unexpected name: {resolved.name!r}"
+                )
+            try:
+                resolved.parent.resolve().relative_to(self.runs_root)
+            except ValueError as err:
+                raise EventStoreError(
+                    f"events.jsonl parent escapes runs root for case_id={case_id!r}"
+                ) from err
+        return path
 
     def list_events(self, case_id: str) -> list[Event]:
-        path = self.events_path(case_id)
+        path = self._events_file(case_id)
         if not path.exists():
             return []
         events: list[Event] = []
@@ -138,7 +165,12 @@ class EventStore:
 
         case_dir = self.case_dir(event.case_id)
         case_dir.mkdir(parents=True, exist_ok=True)
-        path = case_dir / "events.jsonl"
+        path = self._events_file(event.case_id)
+        # Re-check immediately before open to reduce symlink TOCTOU window.
+        if path.is_symlink():
+            raise EventStoreError(
+                f"events.jsonl must not be a symlink for case_id={event.case_id!r}"
+            )
         # Append-only: open with 'a' exclusively; never 'w'/'w+'.
         with path.open("a", encoding="utf-8") as handle:
             handle.write(event.to_json(separators=(",", ":")) + "\n")

@@ -171,6 +171,33 @@ class TestEventStore(unittest.TestCase):
         # Base remains immutable / unchanged.
         self.assertEqual(base.state, CaseState.CREATED)
 
+    def test_events_path_rejects_symlink_escape(self) -> None:
+        case_id = "case-symlink"
+        case_dir = self.store.case_dir(case_id)
+        case_dir.mkdir(parents=True, exist_ok=True)
+        outside = Path(self._tmp.name) / "outside-events.jsonl"
+        outside.write_text('{"smuggled":true}\n', encoding="utf-8")
+        link = case_dir / "events.jsonl"
+        link.symlink_to(outside)
+
+        with self.assertRaises(EventStoreError):
+            self.store.events_path(case_id)
+        with self.assertRaises(EventStoreError):
+            self.store.list_events(case_id)
+        with self.assertRaises(EventStoreError):
+            self.store.append(
+                Event(
+                    event_id="evt-symlink",
+                    case_id=case_id,
+                    seq=0,
+                    ts="2026-11-07T20:00:00Z",
+                    source=EventSource.INTAKE,
+                    type=EventType.CASE_CREATED,
+                )
+            )
+        # Outside file must remain untouched by refused append.
+        self.assertEqual(outside.read_text(encoding="utf-8"), '{"smuggled":true}\n')
+
 
 if __name__ == "__main__":
     unittest.main()

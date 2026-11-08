@@ -6,6 +6,7 @@ import tempfile
 import unittest
 from dataclasses import FrozenInstanceError
 from pathlib import Path
+from typing import Callable
 
 from resolveqa.contracts import (
     Attempts,
@@ -23,7 +24,7 @@ from resolveqa.contracts import (
     VerdictResult,
 )
 from resolveqa.contracts import TestRun as ContractTestRun
-from resolveqa.orchestrator import Orchestrator, OrchestratorLimits
+from resolveqa.orchestrator import Orchestrator, OrchestratorError, OrchestratorLimits
 from resolveqa.store import EventStore
 
 
@@ -118,12 +119,24 @@ def _verdict_env_error() -> Verdict:
 class _LabeledTriage:
     """Test double: triage stage (labeled mock)."""
 
-    def __init__(self, result: TriageRecord | NeedsInfo) -> None:
-        self.result = result
+    def __init__(
+        self,
+        result: TriageRecord | NeedsInfo | None = None,
+        *,
+        error: BaseException | None = None,
+        on_run: Callable[[RunState], None] | None = None,
+    ) -> None:
+        self.result: TriageRecord | NeedsInfo = result if result is not None else _triage_ok()
+        self.error = error
+        self.on_run = on_run
         self.calls = 0
 
     def run(self, case: RunState) -> TriageRecord | NeedsInfo:
         self.calls += 1
+        if self.on_run is not None:
+            self.on_run(case)
+        if self.error is not None:
+            raise self.error
         return self.result
 
 
@@ -166,6 +179,27 @@ class _LabeledVerification:
         return verdict
 
 
+class _SharedLlmBudget:
+    """Labeled shared LLM call counter for live budget sync during a run."""
+
+    def __init__(self, initial: int = 0) -> None:
+        self.calls = initial
+
+    def getter(self, case: RunState) -> int:
+        return max(int(case.attempts.llm_calls), self.calls)
+
+    def consume(self, n: int = 1) -> None:
+        self.calls += n
+
+
+class LLMLimitExceededError(RuntimeError):
+    """Local stand-in matching adapter duck-type (reason=limit_exceeded)."""
+
+    def __init__(self) -> None:
+        super().__init__("limit_exceeded: maximum LLM calls reached")
+        self.reason = "limit_exceeded"
+
+
 class TestOrchestrator(unittest.TestCase):
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
@@ -184,18 +218,20 @@ class TestOrchestrator(unittest.TestCase):
         self,
         *,
         triage: TriageRecord | NeedsInfo | None = None,
+        triage_double: _LabeledTriage | None = None,
         repro: ReproResult | None = None,
         verdicts: list[Verdict] | None = None,
         limits: OrchestratorLimits | None = None,
+        llm_calls_getter: Callable[[RunState], int] | None = None,
     ) -> tuple[Orchestrator, _LabeledTriage, _LabeledReproduction, _LabeledFix, _LabeledVerification]:
-        triage_double = _LabeledTriage(triage if triage is not None else _triage_ok())
+        triage_obj = triage_double or _LabeledTriage(triage if triage is not None else _triage_ok())
         repro_double = _LabeledReproduction(repro if repro is not None else _repro_red())
         fix_double = _LabeledFix()
         verification_double = _LabeledVerification(
             verdicts if verdicts is not None else [_verdict_verified()]
         )
         orch = Orchestrator(
-            triage=triage_double,
+            triage=triage_obj,
             reproduction=repro_double,
             fix=fix_double,
             verification=verification_double,
@@ -204,8 +240,9 @@ class TestOrchestrator(unittest.TestCase):
             if limits is not None
             else OrchestratorLimits(max_fix_attempts=2, max_llm_calls=12),
             clock=self._clock,
+            llm_calls_getter=llm_calls_getter,
         )
-        return orch, triage_double, repro_double, fix_double, verification_double
+        return orch, triage_obj, repro_double, fix_double, verification_double
 
     def test_success_reaches_verified_with_continuous_seq(self) -> None:
         orch, triage_d, repro_d, fix_d, ver_d = self._build()
@@ -216,6 +253,7 @@ class TestOrchestrator(unittest.TestCase):
         self.assertIsNone(final.terminal_reason)
         self.assertEqual(final.base_revision, "base-sha")
         self.assertEqual(final.fix_revision, "fix-sha")
+        self.assertEqual(final.attempts.fix, 1)  # successful Fix counts as an attempt
         self.assertEqual(triage_d.calls, 1)
         self.assertEqual(repro_d.calls, 1)
         self.assertEqual(fix_d.calls, 1)
@@ -235,7 +273,6 @@ class TestOrchestrator(unittest.TestCase):
         self.assertEqual(state_events[-1].to_state, CaseState.VERIFIED)
         self.assertEqual(state_events[-1].source.value, "verification")
 
-        # Original case immutable.
         self.assertEqual(initial.state, CaseState.CREATED)
         with self.assertRaises(FrozenInstanceError):
             initial.state = CaseState.VERIFIED  # type: ignore[misc]
@@ -255,6 +292,16 @@ class TestOrchestrator(unittest.TestCase):
         )
         self.assertEqual(fix_d.calls, 0)
         self.assertEqual(ver_d.calls, 0)
+
+    def test_fix_budget_checked_before_fix_when_already_exhausted(self) -> None:
+        orch, _, _, fix_d, ver_d = self._build()
+        final = orch.run(_case(case_id="case-fix-preexhausted", fix_attempts=2))
+        self.assertEqual(final.state, CaseState.BLOCKED)
+        self.assertEqual(final.terminal_reason.code, BlockedReason.LIMIT_EXCEEDED)  # type: ignore[union-attr]
+        self.assertEqual(fix_d.calls, 0)
+        self.assertEqual(ver_d.calls, 0)
+        events = self.store.list_events("case-fix-preexhausted")
+        self.assertTrue(any(e.type == EventType.LIMIT_REACHED for e in events))
 
     def test_patch_rejection_retries_then_blocks_at_fix_limit(self) -> None:
         orch, _, _, fix_d, ver_d = self._build(
@@ -291,6 +338,62 @@ class TestOrchestrator(unittest.TestCase):
         events = self.store.list_events("case-llm-12")
         self.assertTrue(any(e.type == EventType.LIMIT_REACHED for e in events))
 
+    def test_llm_budget_syncs_incremental_calls_during_run(self) -> None:
+        budget = _SharedLlmBudget(initial=11)
+        triage = _LabeledTriage(on_run=lambda _case: budget.consume(1))
+        orch, triage_d, repro_d, fix_d, ver_d = self._build(
+            triage_double=triage,
+            llm_calls_getter=budget.getter,
+            limits=OrchestratorLimits(max_fix_attempts=2, max_llm_calls=12),
+        )
+        final = orch.run(_case(case_id="case-llm-live", llm_calls=11))
+        self.assertEqual(final.state, CaseState.BLOCKED)
+        self.assertEqual(final.terminal_reason.code, BlockedReason.LIMIT_EXCEEDED)  # type: ignore[union-attr]
+        self.assertEqual(final.attempts.llm_calls, 12)
+        self.assertEqual(triage_d.calls, 1)
+        self.assertEqual(repro_d.calls, 0)
+        self.assertEqual(fix_d.calls, 0)
+        self.assertEqual(ver_d.calls, 0)
+
+    def test_llm_limit_exceeded_error_from_stage_becomes_blocked(self) -> None:
+        triage = _LabeledTriage(error=LLMLimitExceededError())
+        orch, triage_d, repro_d, fix_d, _ = self._build(triage_double=triage)
+        final = orch.run(_case(case_id="case-llm-exc"))
+        self.assertEqual(final.state, CaseState.BLOCKED)
+        self.assertEqual(final.terminal_reason.code, BlockedReason.LIMIT_EXCEEDED)  # type: ignore[union-attr]
+        self.assertEqual(triage_d.calls, 1)
+        self.assertEqual(repro_d.calls, 0)
+        self.assertEqual(fix_d.calls, 0)
+
+    def test_stage_oserror_becomes_infra_error_with_event(self) -> None:
+        triage = _LabeledTriage(error=OSError("disk unavailable"))
+        orch, triage_d, repro_d, fix_d, _ = self._build(triage_double=triage)
+        final = orch.run(_case(case_id="case-oserror-triage"))
+        self.assertEqual(final.state, CaseState.INFRA_ERROR)
+        self.assertEqual(final.terminal_reason.detail, "disk unavailable")  # type: ignore[union-attr]
+        self.assertEqual(triage_d.calls, 1)
+        self.assertEqual(repro_d.calls, 0)
+        self.assertEqual(fix_d.calls, 0)
+        events = self.store.list_events("case-oserror-triage")
+        self.assertEqual(events[-1].to_state, CaseState.INFRA_ERROR)
+        self.assertEqual(events[-1].from_state, CaseState.TRIAGING)
+        self.assertEqual(events[-1].reason, "disk unavailable")
+
+    def test_stage_timeout_becomes_infra_error(self) -> None:
+        triage = _LabeledTriage(error=TimeoutError("stage timed out"))
+        orch, _, _, _, _ = self._build(triage_double=triage)
+        final = orch.run(_case(case_id="case-timeout-triage"))
+        self.assertEqual(final.state, CaseState.INFRA_ERROR)
+        self.assertEqual(final.terminal_reason.detail, "stage timed out")  # type: ignore[union-attr]
+
+    def test_programming_error_from_stage_propagates(self) -> None:
+        triage = _LabeledTriage(error=TypeError("bug in triage double"))
+        orch, _, _, _, _ = self._build(triage_double=triage)
+        with self.assertRaises(TypeError):
+            orch.run(_case(case_id="case-type-error"))
+        events = self.store.list_events("case-type-error")
+        self.assertEqual(events[-1].to_state, CaseState.TRIAGING)
+
     def test_reproduction_env_error_is_infra_error_not_bug(self) -> None:
         orch, _, _, fix_d, _ = self._build(
             repro=ReproResult(
@@ -324,6 +427,22 @@ class TestOrchestrator(unittest.TestCase):
         self.assertEqual(rebuilt.state, CaseState.VERIFIED)
         self.assertEqual(rebuilt.updated_at, final.updated_at)
 
+    def test_stale_created_input_rejected_before_append(self) -> None:
+        orch, _, _, fix_d, _ = self._build()
+        stale = _case(case_id="case-stale-rerun")
+        first = orch.run(stale)
+        self.assertEqual(first.state, CaseState.VERIFIED)
+        before = list(self.store.list_events("case-stale-rerun"))
+        with self.assertRaises(OrchestratorError) as ctx:
+            orch.run(stale)
+        self.assertIn("incompatible", str(ctx.exception).lower())
+        after = self.store.list_events("case-stale-rerun")
+        self.assertEqual(len(before), len(after))
+        self.assertEqual([e.event_id for e in before], [e.event_id for e in after])
+        rebuilt = self.store.reconstruct_state(stale)
+        self.assertEqual(rebuilt.state, CaseState.VERIFIED)
+        self.assertEqual(fix_d.calls, 1)
+
     def test_attempts_use_new_instances_never_setattr(self) -> None:
         orch, _, _, _, _ = self._build(
             verdicts=[
@@ -335,7 +454,8 @@ class TestOrchestrator(unittest.TestCase):
         original_attempts = initial.attempts
         final = orch.run(initial)
         self.assertEqual(original_attempts.fix, 0)
-        self.assertEqual(final.attempts.fix, 1)
+        # First Fix attempt + second Fix attempt (verified) => 2
+        self.assertEqual(final.attempts.fix, 2)
         self.assertIsNot(final.attempts, original_attempts)
         with self.assertRaises(FrozenInstanceError):
             original_attempts.fix = 9  # type: ignore[misc]

@@ -37,10 +37,20 @@ from resolveqa.store.events import EventStore, reason_for_terminal
 REPO_ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_LIMITS_PATH = REPO_ROOT / "config" / "limits.json"
 
+# Operational failures become infra_error. Programming bugs stay explicit.
+_OPERATIONAL_ERRORS = (OSError, TimeoutError)
+
 
 def utc_now_iso() -> str:
     """Return current UTC time as ISO 8601 with explicit Z suffix."""
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def _is_llm_limit_exceeded(exc: BaseException) -> bool:
+    """Duck-type LLM limit failures without importing the LLM adapter."""
+    if type(exc).__name__ == "LLMLimitExceededError":
+        return True
+    return getattr(exc, "reason", None) == BlockedReason.LIMIT_EXCEEDED.value
 
 
 class OrchestratorError(RuntimeError):
@@ -60,6 +70,7 @@ class Orchestrator:
         limits: OrchestratorLimits | None = None,
         limits_path: Path | str | None = None,
         clock: Callable[[], str] | None = None,
+        llm_calls_getter: Callable[[RunState], int] | None = None,
     ) -> None:
         self.triage = triage
         self.reproduction = reproduction
@@ -72,6 +83,7 @@ class Orchestrator:
             path = Path(limits_path) if limits_path is not None else DEFAULT_LIMITS_PATH
             self.limits = load_orchestrator_limits(path)
         self.clock = clock if clock is not None else utc_now_iso
+        self.llm_calls_getter = llm_calls_getter
 
     def run(self, case: RunState) -> RunState:
         """Drive a case from `created` to a terminal state with append-only events."""
@@ -86,6 +98,8 @@ class Orchestrator:
                 f"Orchestrator.run expects state 'created', got {case.state.value}"
             )
 
+        self._assert_history_compatible(case)
+
         current = case
         self._ensure_case_created(current)
 
@@ -94,7 +108,13 @@ class Orchestrator:
             return current
 
         current = self._transition(current, CaseState.TRIAGING, source=EventSource.ORCHESTRATOR)
-        triage_result = self.triage.run(current)
+        triage_result = self._call_stage(
+            current,
+            source=EventSource.TRIAGE,
+            call=lambda: self.triage.run(current),
+        )
+        if isinstance(triage_result, RunState):
+            return triage_result
         if isinstance(triage_result, NeedsInfo):
             return self._transition(
                 current,
@@ -114,13 +134,22 @@ class Orchestrator:
             CaseState.TRIAGED,
             source=EventSource.TRIAGE,
         )
+        current = self._ensure_llm_budget(current)
+        if current.state in TERMINAL_STATES:
+            return current
 
         current = self._transition(
             current,
             CaseState.REPRODUCING,
             source=EventSource.ORCHESTRATOR,
         )
-        repro = self.reproduction.run(current, triage_result)
+        repro = self._call_stage(
+            current,
+            source=EventSource.REPRODUCTION,
+            call=lambda: self.reproduction.run(current, triage_result),
+        )
+        if isinstance(repro, RunState):
+            return repro
         if not isinstance(repro, ReproResult):
             raise OrchestratorError(
                 f"ReproductionStage.run returned unsupported type {type(repro).__name__}"
@@ -154,12 +183,36 @@ class Orchestrator:
             if current.state in TERMINAL_STATES:
                 return current
 
+            current = self._ensure_fix_budget(current)
+            if current.state in TERMINAL_STATES:
+                return current
+
             current = self._transition(
                 current,
                 CaseState.FIXING,
                 source=EventSource.ORCHESTRATOR,
             )
-            patch = self.fix.run(current, triage_result, repro)
+            # Count every attempted Fix execution (success or rejection) via new Attempts.
+            current = self._with_attempts(
+                current,
+                Attempts(
+                    fix=current.attempts.fix + 1,
+                    llm_calls=current.attempts.llm_calls,
+                ),
+            )
+
+            patch = self._call_stage(
+                current,
+                source=EventSource.FIX,
+                call=lambda: self.fix.run(current, triage_result, repro),
+            )
+            if isinstance(patch, RunState):
+                return patch
+
+            current = self._ensure_llm_budget(current)
+            if current.state in TERMINAL_STATES:
+                return current
+
             current = self._transition(
                 current,
                 CaseState.FIXED,
@@ -170,7 +223,13 @@ class Orchestrator:
                 CaseState.VERIFYING,
                 source=EventSource.ORCHESTRATOR,
             )
-            verdict = self.verification.run(current, repro, patch)
+            verdict = self._call_stage(
+                current,
+                source=EventSource.VERIFICATION,
+                call=lambda: self.verification.run(current, repro, patch),
+            )
+            if isinstance(verdict, RunState):
+                return verdict
             if not isinstance(verdict, Verdict):
                 raise OrchestratorError(
                     f"VerificationStage.run returned unsupported type {type(verdict).__name__}"
@@ -197,23 +256,21 @@ class Orchestrator:
                     f"Unsupported verdict result: {verdict.result!r}"
                 )
 
-            # Rejected: count a fix attempt via a new immutable Attempts instance.
-            new_attempts = Attempts(
-                fix=current.attempts.fix + 1,
-                llm_calls=current.attempts.llm_calls,
+            # RFC §2.2: rejected with remaining budget returns to Fix (VERIFYING → FIXING).
+            # Budget is re-checked at the top of the loop before the next Fix.
+
+    def _assert_history_compatible(self, case: RunState) -> None:
+        """Refuse stale CREATED inputs against an advanced event history before appending."""
+        existing = self.store.list_events(case.case_id)
+        if not existing:
+            return
+        rebuilt = self.store.reconstruct_state(case)
+        if rebuilt.state != case.state:
+            raise OrchestratorError(
+                "Stale or incompatible event history for case "
+                f"{case.case_id}: input_state={case.state.value}, "
+                f"history_state={rebuilt.state.value}"
             )
-            current = self._with_attempts(current, new_attempts)
-
-            if new_attempts.fix >= self.limits.max_fix_attempts:
-                return self._block_limit_exceeded(
-                    current,
-                    detail=(
-                        f"max_fix_attempts={self.limits.max_fix_attempts} "
-                        f"reached after verification rejection"
-                    ),
-                )
-
-            # RFC §2.2: rejected with attempts remaining returns to Fix (VERIFYING → FIXING).
 
     def _ensure_case_created(self, case: RunState) -> None:
         existing = self.store.list_events(case.case_id)
@@ -230,16 +287,66 @@ class Orchestrator:
             )
         )
 
+    def _sync_llm_calls(self, case: RunState) -> RunState:
+        reported = case.attempts.llm_calls
+        if self.llm_calls_getter is not None:
+            getter_value = int(self.llm_calls_getter(case))
+            if getter_value < 0:
+                raise OrchestratorError(
+                    f"llm_calls_getter returned negative value: {getter_value}"
+                )
+            reported = max(reported, getter_value)
+        if reported == case.attempts.llm_calls:
+            return case
+        return self._with_attempts(
+            case,
+            Attempts(fix=case.attempts.fix, llm_calls=reported),
+        )
+
     def _ensure_llm_budget(self, case: RunState) -> RunState:
-        if case.attempts.llm_calls < self.limits.max_llm_calls:
+        synced = self._sync_llm_calls(case)
+        if synced.attempts.llm_calls < self.limits.max_llm_calls:
+            return synced
+        return self._block_limit_exceeded(
+            synced,
+            detail=(
+                f"max_llm_calls={self.limits.max_llm_calls} already reached "
+                f"(attempts.llm_calls={synced.attempts.llm_calls})"
+            ),
+        )
+
+    def _ensure_fix_budget(self, case: RunState) -> RunState:
+        if case.attempts.fix < self.limits.max_fix_attempts:
             return case
         return self._block_limit_exceeded(
             case,
             detail=(
-                f"max_llm_calls={self.limits.max_llm_calls} already reached "
-                f"(attempts.llm_calls={case.attempts.llm_calls})"
+                f"max_fix_attempts={self.limits.max_fix_attempts} already reached "
+                f"(attempts.fix={case.attempts.fix})"
             ),
         )
+
+    def _call_stage(self, case: RunState, *, source: EventSource, call: Callable[[], object]) -> object:
+        """Invoke a stage; map operational/limit failures to terminals, re-raise programming errors."""
+        try:
+            return call()
+        except _OPERATIONAL_ERRORS as err:
+            return self._transition(
+                case,
+                CaseState.INFRA_ERROR,
+                source=source,
+                terminal_reason=InfraErrorTerminalReason(
+                    detail=str(err) or type(err).__name__
+                ),
+            )
+        except Exception as err:
+            if _is_llm_limit_exceeded(err):
+                synced = self._sync_llm_calls(case)
+                return self._block_limit_exceeded(
+                    synced,
+                    detail=str(err) or "limit_exceeded",
+                )
+            raise
 
     def _block_limit_exceeded(self, case: RunState, detail: str) -> RunState:
         ts = self.clock()
