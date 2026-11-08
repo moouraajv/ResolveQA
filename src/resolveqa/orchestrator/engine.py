@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import uuid
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
@@ -19,6 +20,7 @@ from resolveqa.contracts import (
     InfraErrorTerminalReason,
     NeedsInfo,
     NeedsInfoTerminalReason,
+    Patch,
     ReproductionStage,
     ReproOutcome,
     ReproResult,
@@ -39,6 +41,13 @@ DEFAULT_LIMITS_PATH = REPO_ROOT / "config" / "limits.json"
 
 # Operational failures become infra_error. Programming bugs stay explicit.
 _OPERATIONAL_ERRORS = (OSError, TimeoutError)
+
+
+@dataclass(frozen=True)
+class _StageFailure:
+    """Private marker: operational/limit failure already recorded as a terminal RunState."""
+
+    case: RunState
 
 
 def utc_now_iso() -> str:
@@ -108,13 +117,19 @@ class Orchestrator:
             return current
 
         current = self._transition(current, CaseState.TRIAGING, source=EventSource.ORCHESTRATOR)
-        triage_result = self._call_stage(
+        triage_raw = self._call_stage(
             current,
             source=EventSource.TRIAGE,
             call=lambda: self.triage.run(current),
         )
-        if isinstance(triage_result, RunState):
-            return triage_result
+        triage_result = self._require_stage_result(
+            triage_raw,
+            TriageRecord,
+            NeedsInfo,
+            stage="TriageStage.run",
+        )
+        if isinstance(triage_result, _StageFailure):
+            return triage_result.case
         if isinstance(triage_result, NeedsInfo):
             return self._transition(
                 current,
@@ -123,10 +138,6 @@ class Orchestrator:
                 terminal_reason=NeedsInfoTerminalReason(
                     question_to_support=triage_result.question_to_support
                 ),
-            )
-        if not isinstance(triage_result, TriageRecord):
-            raise OrchestratorError(
-                f"TriageStage.run returned unsupported type {type(triage_result).__name__}"
             )
 
         current = self._transition(
@@ -143,17 +154,18 @@ class Orchestrator:
             CaseState.REPRODUCING,
             source=EventSource.ORCHESTRATOR,
         )
-        repro = self._call_stage(
+        repro_raw = self._call_stage(
             current,
             source=EventSource.REPRODUCTION,
             call=lambda: self.reproduction.run(current, triage_result),
         )
-        if isinstance(repro, RunState):
-            return repro
-        if not isinstance(repro, ReproResult):
-            raise OrchestratorError(
-                f"ReproductionStage.run returned unsupported type {type(repro).__name__}"
-            )
+        repro = self._require_stage_result(
+            repro_raw,
+            ReproResult,
+            stage="ReproductionStage.run",
+        )
+        if isinstance(repro, _StageFailure):
+            return repro.case
 
         if repro.outcome == ReproOutcome.ENV_ERROR:
             return self._transition(
@@ -201,13 +213,18 @@ class Orchestrator:
                 ),
             )
 
-            patch = self._call_stage(
+            patch_raw = self._call_stage(
                 current,
                 source=EventSource.FIX,
                 call=lambda: self.fix.run(current, triage_result, repro),
             )
-            if isinstance(patch, RunState):
-                return patch
+            patch = self._require_stage_result(
+                patch_raw,
+                Patch,
+                stage="FixStage.run",
+            )
+            if isinstance(patch, _StageFailure):
+                return patch.case
 
             current = self._ensure_llm_budget(current)
             if current.state in TERMINAL_STATES:
@@ -223,17 +240,18 @@ class Orchestrator:
                 CaseState.VERIFYING,
                 source=EventSource.ORCHESTRATOR,
             )
-            verdict = self._call_stage(
+            verdict_raw = self._call_stage(
                 current,
                 source=EventSource.VERIFICATION,
                 call=lambda: self.verification.run(current, repro, patch),
             )
-            if isinstance(verdict, RunState):
-                return verdict
-            if not isinstance(verdict, Verdict):
-                raise OrchestratorError(
-                    f"VerificationStage.run returned unsupported type {type(verdict).__name__}"
-                )
+            verdict = self._require_stage_result(
+                verdict_raw,
+                Verdict,
+                stage="VerificationStage.run",
+            )
+            if isinstance(verdict, _StageFailure):
+                return verdict.case
 
             if verdict.result == VerdictResult.ENV_ERROR:
                 detail = (
@@ -326,27 +344,53 @@ class Orchestrator:
             ),
         )
 
-    def _call_stage(self, case: RunState, *, source: EventSource, call: Callable[[], object]) -> object:
-        """Invoke a stage; map operational/limit failures to terminals, re-raise programming errors."""
+    def _call_stage(
+        self,
+        case: RunState,
+        *,
+        source: EventSource,
+        call: Callable[[], object],
+    ) -> object | _StageFailure:
+        """Invoke a stage; wrap operational/limit terminals, re-raise programming errors."""
         try:
             return call()
         except _OPERATIONAL_ERRORS as err:
-            return self._transition(
-                case,
-                CaseState.INFRA_ERROR,
-                source=source,
-                terminal_reason=InfraErrorTerminalReason(
-                    detail=str(err) or type(err).__name__
-                ),
+            return _StageFailure(
+                self._transition(
+                    case,
+                    CaseState.INFRA_ERROR,
+                    source=source,
+                    terminal_reason=InfraErrorTerminalReason(
+                        detail=str(err) or type(err).__name__
+                    ),
+                )
             )
         except Exception as err:
             if _is_llm_limit_exceeded(err):
                 synced = self._sync_llm_calls(case)
-                return self._block_limit_exceeded(
-                    synced,
-                    detail=str(err) or "limit_exceeded",
+                return _StageFailure(
+                    self._block_limit_exceeded(
+                        synced,
+                        detail=str(err) or "limit_exceeded",
+                    )
                 )
             raise
+
+    @staticmethod
+    def _require_stage_result(
+        value: object | _StageFailure,
+        *allowed: type,
+        stage: str,
+    ) -> object | _StageFailure:
+        """Accept only an internal failure wrapper or the exact external stage types."""
+        if isinstance(value, _StageFailure):
+            return value
+        if isinstance(value, allowed):
+            return value
+        raise OrchestratorError(
+            f"{stage} returned unsupported type {type(value).__name__}; "
+            f"expected one of {[cls.__name__ for cls in allowed]}"
+        )
 
     def _block_limit_exceeded(self, case: RunState, detail: str) -> RunState:
         ts = self.clock()

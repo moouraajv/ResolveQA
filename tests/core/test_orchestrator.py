@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import tempfile
 import unittest
-from dataclasses import FrozenInstanceError
+from dataclasses import FrozenInstanceError, replace
 from pathlib import Path
-from typing import Callable
+from typing import Any, Callable
 
 from resolveqa.contracts import (
     Attempts,
@@ -121,62 +121,89 @@ class _LabeledTriage:
 
     def __init__(
         self,
-        result: TriageRecord | NeedsInfo | None = None,
+        result: Any = None,
         *,
         error: BaseException | None = None,
         on_run: Callable[[RunState], None] | None = None,
+        return_verified_case: bool = False,
     ) -> None:
-        self.result: TriageRecord | NeedsInfo = result if result is not None else _triage_ok()
+        self.result: Any = _triage_ok() if result is None else result
         self.error = error
         self.on_run = on_run
+        self.return_verified_case = return_verified_case
         self.calls = 0
 
-    def run(self, case: RunState) -> TriageRecord | NeedsInfo:
+    def run(self, case: RunState) -> Any:
         self.calls += 1
         if self.on_run is not None:
             self.on_run(case)
         if self.error is not None:
             raise self.error
+        if self.return_verified_case:
+            return replace(case, state=CaseState.VERIFIED)
         return self.result
 
 
 class _LabeledReproduction:
     """Test double: reproduction stage (labeled mock)."""
 
-    def __init__(self, result: ReproResult) -> None:
-        self.result = result
+    def __init__(
+        self,
+        result: Any = None,
+        *,
+        return_verified_case: bool = False,
+    ) -> None:
+        self.result: Any = _repro_red() if result is None else result
+        self.return_verified_case = return_verified_case
         self.calls = 0
 
-    def run(self, case: RunState, triage: TriageRecord) -> ReproResult:
+    def run(self, case: RunState, triage: TriageRecord) -> Any:
         self.calls += 1
+        if self.return_verified_case:
+            return replace(case, state=CaseState.VERIFIED)
         return self.result
 
 
 class _LabeledFix:
     """Test double: fix stage (labeled mock)."""
 
-    def __init__(self, result: Patch | None = None) -> None:
-        self.result = result if result is not None else _patch()
+    def __init__(
+        self,
+        result: Any = None,
+        *,
+        return_verified_case: bool = False,
+    ) -> None:
+        self.result: Any = _patch() if result is None else result
+        self.return_verified_case = return_verified_case
         self.calls = 0
 
-    def run(self, case: RunState, triage: TriageRecord, repro: ReproResult) -> Patch:
+    def run(self, case: RunState, triage: TriageRecord, repro: ReproResult) -> Any:
         self.calls += 1
+        if self.return_verified_case:
+            return replace(case, state=CaseState.VERIFIED)
         return self.result
 
 
 class _LabeledVerification:
     """Test double: verification stage with scripted verdicts (labeled mock)."""
 
-    def __init__(self, results: list[Verdict]) -> None:
-        self.results = list(results)
+    def __init__(
+        self,
+        results: list[Any] | None = None,
+        *,
+        return_verified_case: bool = False,
+    ) -> None:
+        self.results = list(results) if results is not None else [_verdict_verified()]
+        self.return_verified_case = return_verified_case
         self.calls = 0
 
-    def run(self, case: RunState, repro: ReproResult, patch: Patch) -> Verdict:
-        if self.calls >= len(self.results):
-            raise AssertionError("Verification double exhausted scripted verdicts")
-        verdict = self.results[self.calls]
+    def run(self, case: RunState, repro: ReproResult, patch: Patch) -> Any:
         self.calls += 1
-        return verdict
+        if self.return_verified_case:
+            return replace(case, state=CaseState.VERIFIED)
+        if self.calls > len(self.results):
+            raise AssertionError("Verification double exhausted scripted verdicts")
+        return self.results[self.calls - 1]
 
 
 class _SharedLlmBudget:
@@ -220,21 +247,26 @@ class TestOrchestrator(unittest.TestCase):
         triage: TriageRecord | NeedsInfo | None = None,
         triage_double: _LabeledTriage | None = None,
         repro: ReproResult | None = None,
+        repro_double: _LabeledReproduction | None = None,
+        fix_double: _LabeledFix | None = None,
         verdicts: list[Verdict] | None = None,
+        verification_double: _LabeledVerification | None = None,
         limits: OrchestratorLimits | None = None,
         llm_calls_getter: Callable[[RunState], int] | None = None,
     ) -> tuple[Orchestrator, _LabeledTriage, _LabeledReproduction, _LabeledFix, _LabeledVerification]:
         triage_obj = triage_double or _LabeledTriage(triage if triage is not None else _triage_ok())
-        repro_double = _LabeledReproduction(repro if repro is not None else _repro_red())
-        fix_double = _LabeledFix()
-        verification_double = _LabeledVerification(
+        repro_obj = repro_double or _LabeledReproduction(
+            repro if repro is not None else _repro_red()
+        )
+        fix_obj = fix_double or _LabeledFix()
+        verification_obj = verification_double or _LabeledVerification(
             verdicts if verdicts is not None else [_verdict_verified()]
         )
         orch = Orchestrator(
             triage=triage_obj,
-            reproduction=repro_double,
-            fix=fix_double,
-            verification=verification_double,
+            reproduction=repro_obj,
+            fix=fix_obj,
+            verification=verification_obj,
             store=self.store,
             limits=limits
             if limits is not None
@@ -242,7 +274,7 @@ class TestOrchestrator(unittest.TestCase):
             clock=self._clock,
             llm_calls_getter=llm_calls_getter,
         )
-        return orch, triage_obj, repro_double, fix_double, verification_double
+        return orch, triage_obj, repro_obj, fix_obj, verification_obj
 
     def test_success_reaches_verified_with_continuous_seq(self) -> None:
         orch, triage_d, repro_d, fix_d, ver_d = self._build()
@@ -393,6 +425,63 @@ class TestOrchestrator(unittest.TestCase):
             orch.run(_case(case_id="case-type-error"))
         events = self.store.list_events("case-type-error")
         self.assertEqual(events[-1].to_state, CaseState.TRIAGING)
+
+    def _assert_no_verified_outcome(self, case_id: str) -> None:
+        events = self.store.list_events(case_id)
+        self.assertFalse(any(e.to_state == CaseState.VERIFIED for e in events))
+        self.assertFalse(
+            any(e.type == EventType.STATE_CHANGED and e.to_state == CaseState.VERIFIED for e in events)
+        )
+
+    def test_triage_returning_runstate_verified_is_rejected(self) -> None:
+        orch, triage_d, repro_d, fix_d, ver_d = self._build(
+            triage_double=_LabeledTriage(return_verified_case=True),
+        )
+        with self.assertRaises(OrchestratorError) as ctx:
+            orch.run(_case(case_id="case-fake-verified-triage"))
+        self.assertIn("TriageStage.run", str(ctx.exception))
+        self.assertIn("RunState", str(ctx.exception))
+        self.assertEqual(triage_d.calls, 1)
+        self.assertEqual(repro_d.calls, 0)
+        self.assertEqual(fix_d.calls, 0)
+        self.assertEqual(ver_d.calls, 0)
+        self._assert_no_verified_outcome("case-fake-verified-triage")
+        events = self.store.list_events("case-fake-verified-triage")
+        self.assertEqual(events[-1].to_state, CaseState.TRIAGING)
+
+    def test_reproduction_returning_runstate_verified_is_rejected(self) -> None:
+        orch, _, repro_d, fix_d, ver_d = self._build(
+            repro_double=_LabeledReproduction(return_verified_case=True),
+        )
+        with self.assertRaises(OrchestratorError) as ctx:
+            orch.run(_case(case_id="case-fake-verified-repro"))
+        self.assertIn("ReproductionStage.run", str(ctx.exception))
+        self.assertEqual(repro_d.calls, 1)
+        self.assertEqual(fix_d.calls, 0)
+        self.assertEqual(ver_d.calls, 0)
+        self._assert_no_verified_outcome("case-fake-verified-repro")
+
+    def test_fix_returning_runstate_verified_is_rejected(self) -> None:
+        orch, _, _, fix_d, ver_d = self._build(
+            fix_double=_LabeledFix(return_verified_case=True),
+        )
+        with self.assertRaises(OrchestratorError) as ctx:
+            orch.run(_case(case_id="case-fake-verified-fix"))
+        self.assertIn("FixStage.run", str(ctx.exception))
+        self.assertEqual(fix_d.calls, 1)
+        self.assertEqual(ver_d.calls, 0)
+        self._assert_no_verified_outcome("case-fake-verified-fix")
+
+    def test_verification_returning_runstate_verified_is_rejected(self) -> None:
+        orch, _, _, fix_d, ver_d = self._build(
+            verification_double=_LabeledVerification(return_verified_case=True),
+        )
+        with self.assertRaises(OrchestratorError) as ctx:
+            orch.run(_case(case_id="case-fake-verified-verdict"))
+        self.assertIn("VerificationStage.run", str(ctx.exception))
+        self.assertEqual(fix_d.calls, 1)
+        self.assertEqual(ver_d.calls, 1)
+        self._assert_no_verified_outcome("case-fake-verified-verdict")
 
     def test_reproduction_env_error_is_infra_error_not_bug(self) -> None:
         orch, _, _, fix_d, _ = self._build(
