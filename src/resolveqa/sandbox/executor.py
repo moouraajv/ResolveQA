@@ -162,6 +162,11 @@ class LocalSandbox:
         for part in raw_path.parts:
             current = current / part
             if current.is_symlink():
+                raw_link = Path(os.readlink(current))
+                if raw_link.is_absolute() or str(raw_link).startswith(("/", "\\")):
+                    raise ValueError(
+                        f"Symlink with absolute target is not allowed in workdir_ref: {workdir_ref!r} -> {raw_link}"
+                    )
                 resolved_target = current.resolve()
                 if not resolved_target.is_relative_to(self.base_root):
                     raise ValueError(
@@ -179,10 +184,15 @@ class LocalSandbox:
 
     @staticmethod
     def _validate_no_external_symlinks(source_dir: Path) -> None:
-        """Ensure no symlink inside `source_dir` resolves outside `source_dir`."""
+        """Ensure no symlink inside `source_dir` has an absolute target or resolves outside `source_dir`."""
         resolved_root = source_dir.resolve()
         for entry in source_dir.rglob("*"):
             if entry.is_symlink():
+                raw_target = Path(os.readlink(entry))
+                if raw_target.is_absolute() or str(raw_target).startswith(("/", "\\")):
+                    raise ValueError(
+                        f"Symlink with absolute target is not allowed inside workdir: {entry.relative_to(source_dir)} -> {raw_target}"
+                    )
                 target = entry.resolve()
                 if not target.is_relative_to(resolved_root):
                     raise ValueError(
