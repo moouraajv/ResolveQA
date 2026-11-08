@@ -1,3 +1,9 @@
-"""ResolveQA store package (Track A — owned elsewhere; stub only)."""
+"""ResolveQA store package (Track A)."""
 
-__all__: list[str] = []
+from .events import EventStore, EventStoreError, validate_case_id
+
+__all__ = [
+    "EventStore",
+    "EventStoreError",
+    "validate_case_id",
+]
