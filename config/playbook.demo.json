@@ -1,0 +1,12 @@
+{
+  "approvers": ["reviewer-demo", "!external-guest"],
+  "reply": {
+    "tone": "friendly",
+    "max_chars": 280
+  },
+  "docs": {
+    "changelog_path": "CHANGELOG.md",
+    "technical_notes_dir": "technical_notes",
+    "kb_drafts_dir": "kb_drafts"
+  }
+}
