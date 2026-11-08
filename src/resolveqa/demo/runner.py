@@ -15,12 +15,12 @@ from resolveqa.contracts import (
 )
 from resolveqa.delivery import DeliveryBuilder
 from resolveqa.intake import Intake
-from resolveqa.llm import DeterministicMockLLM
 from resolveqa.orchestrator import Orchestrator
 from resolveqa.reply import ReplyComposer, ReplyOutcome
 from resolveqa.store import EventStore
 
 from .customer import generate_customer_artifacts
+from .llm import create_demo_llm
 
 COUPON_REPORT = ('Comprei R$ 200,00 no site, apliquei o cupom DESC10 de 10% e o total '
                  'continuou R$ 200,00. Deveria ser R$ 180,00.')
@@ -82,6 +82,9 @@ def run_demo(scenario='coupon', *, root=ROOT, llm=None, real=False):
     """Run a fresh synthetic case, persisting actual events, outputs and delivery."""
     if scenario not in {'coupon', 'vague'}:
         raise ValueError('scenario must be coupon or vague')
+    llm = llm if llm is not None else create_demo_llm(real=real)
+    if bool(getattr(llm, 'use_real', False)) != real:
+        raise ValueError('O modo do adaptador deve corresponder à flag explícita da demo')
     components = load_components()  # Fail before creating a case or any artefact.
     root = Path(root).resolve()
     runs = root / 'runs'
@@ -91,11 +94,6 @@ def run_demo(scenario='coupon', *, root=ROOT, llm=None, real=False):
         report_text=COUPON_REPORT if scenario == 'coupon' else VAGUE_REPORT,
     ))
     mode = 'real' if real else 'mock'
-    llm = llm if llm is not None else DeterministicMockLLM(case=case)
-    if real and not getattr(llm, 'use_real', False):
-        raise ValueError('Modo real exige adaptador real explícito')
-    if not real and getattr(llm, 'use_real', False):
-        raise ValueError('Adaptador real exige a flag explícita de modo real')
     llm.bind_case(case)
     events = EventStore(runs)
     evidence = components['EvidenceStore'](runs_root=runs)
@@ -166,6 +164,7 @@ def run_demo(scenario='coupon', *, root=ROOT, llm=None, real=False):
         clock=lambda: datetime.now(timezone.utc).isoformat(),
     ).run(case)
     delivery = message = None
+    corrected_behavior = None
     verdict = verifier.result
     if final.state == CaseState.VERIFIED:
         # Delivery's public file convention; data comes only from real stage outputs.
@@ -179,7 +178,8 @@ def run_demo(scenario='coupon', *, root=ROOT, llm=None, real=False):
                  f'Arquivos suspeitos: {", ".join(record.suspect_files)}. '
                  f'Correção proposta no diff; aprovação independente: {verdict.result.value}.')
         save(EvidenceKind.REPORT, cause, EventSource.DELIVERY, 'txt', 'cause')
-        save(EvidenceKind.VERDICT, 'total agora R$ 180,00', EventSource.DELIVERY,
+        corrected_behavior = f'total agora {record.expected}'
+        save(EvidenceKind.VERDICT, corrected_behavior, EventSource.DELIVERY,
              'txt', 'corrected_behavior')
         final = replace(final, evidence_ids=tuple(ids))
         delivery = DeliveryBuilder(runs_root=runs, limits_path=root / 'config/limits.json').build(final, verdict)
@@ -187,10 +187,11 @@ def run_demo(scenario='coupon', *, root=ROOT, llm=None, real=False):
     if final.state in {CaseState.VERIFIED, CaseState.NEEDS_INFO, CaseState.BLOCKED}:
         seq = events.next_seq(case.case_id)
         message = ReplyComposer().compose(
-            final, ReplyOutcome(corrected_behavior='total agora R$ 180,00'
-                                if final.state == CaseState.VERIFIED else None),
+            final, ReplyOutcome(corrected_behavior=corrected_behavior),
             events=events.list_events(case.case_id), sent_after_event_seq=seq,
         )
+        if message.text.endswith('?.'):
+            message = replace(message, text=message.text[:-1])
         # The channel is simulated. Record the message at its actual sequence.
         item = evidence.save_evidence(case_id=case.case_id, kind=EvidenceKind.CUSTOMER_MESSAGE,
                                      content=message.to_json(), extension='json', simulated=True)
