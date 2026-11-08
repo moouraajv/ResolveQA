@@ -392,7 +392,7 @@ PURPOSE_PROMPT_GUIDELINES: dict[str, str] = {
     "reproduction": (
         "PROMPT RULES (BENCHMARK VALIDATED): Generate a standalone Python unittest/pytest reproduction "
         "test that uses the exact numeric/monetary values from the report (never hardcoded example "
-        "values). If the report lacks sufficient data, return needs_info with reproduction=null."
+        "values)."
     ),
     "fix": (
         "PROMPT RULES (BENCHMARK VALIDATED): Return a JSON object with keys 'file', 'search', and "
@@ -558,7 +558,51 @@ def default_featherless_transport(
         raise ConnectionError(redact_secrets(f"Featherless network error: {exc}")) from None
 
 
-def _is_retryable_transport_error(exc: BaseException, retryable_codes: tuple[int, ...]) -> bool:
+def _has_valid_featherless_key(env_file_path: Path | str | None, env_key_name: str) -> bool:
+    """Return True if a valid 0600 key exists without keeping the key in caller frame locals."""
+    key = load_featherless_api_key(env_file_path, env_key_name=env_key_name, strict_permissions=False)
+    present = bool(key)
+    key = None
+    del key
+    return present
+
+
+def _invoke_transport_ephemeral_auth(
+    transport_fn: Callable[[str, dict[str, str], bytes, float], dict[str, Any]],
+    endpoint: str,
+    env_file_path: Path,
+    env_key_name: str,
+    body_bytes: bytes,
+    timeout_s: float,
+) -> dict[str, Any]:
+    """Mount Authorization header in a short helper and scrub locals before propagating any Exception."""
+    secret_val = load_featherless_api_key(env_file_path, env_key_name=env_key_name, strict_permissions=False)
+    if not secret_val:
+        raise LLMProviderError("Featherless API key unavailable at runtime")
+    headers: dict[str, str] = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {secret_val}",
+    }
+    secret_val = ""
+    del secret_val
+    try:
+        return transport_fn(endpoint, headers, body_bytes, timeout_s)
+    except Exception as exc:
+        headers.clear()
+        del headers
+        if isinstance(exc, FeatherlessHTTPError):
+            raise FeatherlessHTTPError(exc.status_code, str(exc)) from None
+        if isinstance(exc, TimeoutError):
+            raise TimeoutError(redact_secrets(str(exc))) from None
+        if isinstance(exc, ConnectionError):
+            raise ConnectionError(redact_secrets(str(exc))) from None
+        raise LLMProviderError(redact_secrets(str(exc))) from None
+    finally:
+        if "headers" in locals():
+            headers.clear()
+
+
+def _is_retryable_transport_error(exc: Exception, retryable_codes: tuple[int, ...]) -> bool:
     """Return True only for network errors, timeouts, or HTTP 429 / 503."""
     if isinstance(exc, FeatherlessHTTPError):
         return exc.status_code in retryable_codes
@@ -788,20 +832,17 @@ class DeterministicMockLLM:
             self._standalone_calls = new_call_count
 
         # Check if real Featherless mode is explicitly enabled and a valid 0600 key exists
-        api_key: Optional[str] = None
-        if self.use_real and self.response_override is None:
-            api_key = load_featherless_api_key(
-                self.env_file_path,
-                env_key_name=self.config.env_key_name,
-                strict_permissions=False,
-            )
+        use_featherless = (
+            self.use_real
+            and self.response_override is None
+            and _has_valid_featherless_key(self.env_file_path, self.config.env_key_name)
+        )
 
-        if self.use_real and self.response_override is None and api_key is not None:
+        if use_featherless:
             result = self._complete_via_featherless(
                 purpose=norm_purpose,
                 messages=sanitized_messages,
                 schema=schema,
-                api_key=api_key,
             )
         else:
             if self.response_override is not None:
@@ -873,14 +914,13 @@ class DeterministicMockLLM:
         purpose: str,
         messages: list[dict[str, str]],
         schema: Optional[dict[str, Any]],
-        api_key: str,
     ) -> LLMResult:
         """Call Featherless primary model (with 1 retry on network/429/503), falling back to backup model on error or invalid output."""
         validated_endpoint = validate_featherless_endpoint(self.config.endpoint)
         transport_fn = self.transport if self.transport is not None else default_featherless_transport
         outbound_messages = self._build_outbound_messages(purpose, messages)
         models_to_try = (self.config.primary_model, self.config.fallback_model)
-        last_error: Optional[BaseException] = None
+        last_error: Optional[Exception] = None
 
         for model_name in models_to_try:
             max_attempts = 1 + int(self.config.max_retries)
@@ -892,18 +932,16 @@ class DeterministicMockLLM:
                     "max_tokens": self.config.max_tokens,
                 }
                 body_bytes = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-                headers = {
-                    "Content-Type": "application/json",
-                    "Authorization": f"Bearer {api_key}",
-                }
                 try:
-                    resp_data = transport_fn(
-                        validated_endpoint,
-                        headers,
-                        body_bytes,
-                        self.timeout_s,
+                    resp_data = _invoke_transport_ephemeral_auth(
+                        transport_fn=transport_fn,
+                        endpoint=validated_endpoint,
+                        env_file_path=self.env_file_path,
+                        env_key_name=self.config.env_key_name,
+                        body_bytes=body_bytes,
+                        timeout_s=self.timeout_s,
                     )
-                except BaseException as exc:
+                except Exception as exc:
                     last_error = exc
                     if attempt + 1 < max_attempts and _is_retryable_transport_error(
                         exc, self.config.retryable_status_codes
