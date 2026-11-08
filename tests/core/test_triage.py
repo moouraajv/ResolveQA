@@ -93,7 +93,7 @@ class TestTriageStage(unittest.TestCase):
             self.assertTrue((store.case_dir(case.case_id) / ev2.path).is_file())
 
     def test_other_values_report_300_270_and_grounding_validation(self) -> None:
-        """QA (1): Relato com outros valores (R$ 300,00 / R$ 270,00) extrai valores reais do relato, e valores fora do relato levantam LLMOutputError."""
+        """QA (1): Relato com outros valores (R$ 300,00 / R$ 270,00) extrai valores reais do relato."""
         report_300 = (
             "Realizei uma compra de R$ 300,00 usando cupom de 10%. "
             "O valor esperado era R$ 270,00, porém o valor observado foi R$ 300,00."
@@ -119,7 +119,13 @@ class TestTriageStage(unittest.TestCase):
         self.assertEqual(res_no_cents.expected, "R$ 270,00")
         self.assertEqual(res_no_cents.observed, "R$ 300,00")
 
-        # If LLM returns values (e.g. R$ 180,00 / R$ 200,00) that do NOT appear in a R$ 300 / R$ 270 report -> LLMOutputError
+    def test_ungrounded_values_turn_into_needs_info_and_persist_evidence(self) -> None:
+        """DECISÃO DA EQUIPE: Valores alucinados ou fora do relato viram NeedsInfo (com pergunta objetiva) e não erro de infra."""
+        report_300 = (
+            "Realizei uma compra de R$ 300,00 usando cupom de 10%. "
+            "O valor esperado era R$ 270,00, porém o valor observado foi R$ 300,00."
+        )
+        case_300 = _make_case(report_300, case_id="case-300-ungrounded")
         hallucinated_payload = json.dumps({
             "status": "triaged",
             "input": "compra de R$ 200,00 com cupom de 10%",
@@ -128,9 +134,62 @@ class TestTriageStage(unittest.TestCase):
             "suspect_files": ["checkout.py"],
             "confidence": 0.95,
         })
-        triage_ungrounded = Triage(llm=LLMAdapter(response_override=hallucinated_payload))
-        with self.assertRaises(LLMOutputError):
-            triage_ungrounded.run(case_300)
+        with tempfile.TemporaryDirectory() as tmp:
+            store = EvidenceStore(runs_root=tmp)
+            triage_ungrounded = Triage(llm=LLMAdapter(response_override=hallucinated_payload), store=store)
+            result = triage_ungrounded.run(case_300)
+
+            self.assertIsInstance(result, NeedsInfo)
+            assert isinstance(result, NeedsInfo)
+            self.assertTrue("expected" in result.missing_fields or "observed" in result.missing_fields)
+            self.assertIn("?", result.question_to_support)
+            ev = triage_ungrounded.last_evidence_by_case.get(case_300.case_id)
+            self.assertIsNotNone(ev)
+
+    def test_swapped_expected_and_observed_roles_rejected_as_needs_info(self) -> None:
+        """49-1 regression: LLM que troca expected e observed (expected R$ 300 / observed R$ 270 em relato 300/270) é recusado e vira NeedsInfo."""
+        report_300 = (
+            "Realizei uma compra de R$ 300,00 usando cupom de 10%. "
+            "O valor esperado era R$ 270,00, porém o valor cobrado continuou em R$ 300,00."
+        )
+        case_300 = _make_case(report_300, case_id="case-swapped")
+
+        swapped_payload = json.dumps({
+            "status": "triaged",
+            "input": "compra de R$ 300,00 com cupom de 10%",
+            "expected": "R$ 300,00",
+            "observed": "R$ 270,00",
+            "suspect_files": ["checkout.py"],
+            "confidence": 0.9,
+        })
+        with tempfile.TemporaryDirectory() as tmp:
+            store = EvidenceStore(runs_root=tmp)
+            triage = Triage(llm=LLMAdapter(response_override=swapped_payload), store=store)
+            result = triage.run(case_300)
+
+            self.assertIsInstance(result, NeedsInfo)
+            assert isinstance(result, NeedsInfo)
+            self.assertIn("expected", result.missing_fields)
+            self.assertIn("observed", result.missing_fields)
+            self.assertIn("?", result.question_to_support)
+
+    def test_report_without_input_returns_needs_info_missing_input(self) -> None:
+        """49-2 regression: Relato sem entrada informada (sem percentual, sem código de cupom) devolve NeedsInfo com missing_fields=['input']."""
+        report_no_input = (
+            "No checkout, o valor esperado era R$ 180,00 mas o valor observado cobrado foi R$ 200,00."
+        )
+        case_no_input = _make_case(report_no_input, case_id="case-no-input")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            store = EvidenceStore(runs_root=tmp)
+            triage = Triage(llm=LLMAdapter(), store=store)
+            result = triage.run(case_no_input)
+
+            self.assertIsInstance(result, NeedsInfo)
+            assert isinstance(result, NeedsInfo)
+            self.assertIn("input", result.missing_fields)
+            self.assertIn("?", result.question_to_support)
+            self.assertIn(case_no_input.case_id, triage.last_evidence_by_case)
 
     def test_report_without_values_returns_needs_info_and_persists_evidence(self) -> None:
         """Critério 2 & QA (3): Um relato sem valores leva a NeedsInfo com pergunta ao suporte E também gera evidência única."""
