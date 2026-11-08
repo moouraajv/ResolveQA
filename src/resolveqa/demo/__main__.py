@@ -1,30 +1,24 @@
 """Run with PYTHONPATH=src .venv/bin/python -B -m resolveqa.demo."""
 import argparse
-import os
 import sys
 
 from resolveqa.demo.runner import MissingComponents, run_demo
 from resolveqa.timeline import load_timeline
+from .llm import create_demo_llm
 
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description='Executor ponta a ponta do ResolveQA')
     parser.add_argument('--scenario', choices=('coupon', 'vague', 'all'), default='all')
     parser.add_argument('--real-llm', action='store_true', help='Opt-in: usar Featherless com chave do ambiente')
-    parser.add_argument('--model', default=None, help='Modelo do modo real (ou FEATHERLESS_MODEL)')
     args = parser.parse_args(argv)
     print('modo real' if args.real_llm else 'modo mock')
     print('Canal simulado; resposta ao cliente apenas local')
     try:
-        if args.real_llm:
-            from .real_llm import RealLLM
-            # Validate credentials before loading any stages; never print their value.
-            RealLLM(args.model or os.environ.get('FEATHERLESS_MODEL'))
+        create_demo_llm(real=args.real_llm)  # Validate the file before loading stages.
         status = 0
         for scenario in (('coupon', 'vague') if args.scenario == 'all' else (args.scenario,)):
-            llm = None
-            if args.real_llm:
-                llm = RealLLM(args.model or os.environ.get('FEATHERLESS_MODEL'))
+            llm = create_demo_llm(real=args.real_llm)
             result = run_demo(scenario, llm=llm, real=args.real_llm)
             print(f'\nCenário {scenario} · caso {result.case.case_id}')
             print(f'Relato: {result.case.report_text}')
