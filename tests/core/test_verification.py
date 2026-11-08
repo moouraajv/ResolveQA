@@ -22,6 +22,7 @@ from resolveqa.contracts import (
 )
 from resolveqa.sandbox import LocalSandbox
 from resolveqa.verification import Verification, Verifier
+from resolveqa.verification.verifier import apply_unified_diff
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEMO_TARGET_DIR = REPO_ROOT / "demo-target"
@@ -123,6 +124,43 @@ def _make_repro(
 
 class TestVerificationStage(unittest.TestCase):
     """Validate Issue #12 acceptance criteria and protected oracle invariants."""
+
+    def test_patch_paths_through_symlinks_report_the_resolved_target(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            target_dir = Path(temp_dir)
+            protected_dir = target_dir / "tests"
+            protected_dir.mkdir()
+            protected_file = protected_dir / "test_protected.py"
+            protected_file.write_text("assert True\n", encoding="utf-8")
+            alias = target_dir / "source.py"
+            alias.symlink_to(protected_file)
+
+            touched = apply_unified_diff(
+                target_dir,
+                """\
+--- a/source.py
++++ b/source.py
+@@ -1 +1 @@
+-assert True
++assert False
+""",
+            )
+
+            self.assertEqual(touched, ("tests/test_protected.py",))
+            self.assertEqual(protected_file.read_text(encoding="utf-8"), "assert False\n")
+
+            touched = apply_unified_diff(
+                target_dir,
+                """\
+--- a/source.py
++++ /dev/null
+@@ -1 +0,0 @@
+-assert False
+""",
+            )
+
+            self.assertEqual(touched, ("tests/test_protected.py",))
+            self.assertFalse(protected_file.exists())
 
     def test_implements_verification_stage_protocol(self) -> None:
         verifier = Verification(base_root=REPO_ROOT)

@@ -453,7 +453,9 @@ def apply_unified_diff(target_dir: Path, diff_text: str) -> tuple[str, ...]:
                 raise ValueError(f"Diff path escapes target_dir: {old_path}")
             if file_to_delete.exists():
                 file_to_delete.unlink()
-            touched_files.append(old_path)
+            touched_files.append(
+                file_to_delete.relative_to(target_dir.resolve()).as_posix()
+            )
         else:
             rel_target = new_path if new_path != "/dev/null" else old_path
             target_file = (target_dir / rel_target).resolve()
@@ -467,7 +469,9 @@ def apply_unified_diff(target_dir: Path, diff_text: str) -> tuple[str, ...]:
             target_file.parent.mkdir(parents=True, exist_ok=True)
             trailing_nl = "\n" if updated_lines else ""
             target_file.write_text("\n".join(updated_lines) + trailing_nl, encoding="utf-8")
-            touched_files.append(rel_target)
+            touched_files.append(
+                target_file.relative_to(target_dir.resolve()).as_posix()
+            )
 
     if not touched_files:
         raise ValueError("Unified diff contained no applicable file changes")
@@ -639,7 +643,7 @@ class Verification:
                     else:
                         dest.parent.mkdir(parents=True, exist_ok=True)
                         dest.write_text(str(raw_v), encoding="utf-8")
-                    touched_list.append(rel_k)
+                    touched_list.append(dest.relative_to(after_dir.resolve()).as_posix())
                 return tuple(dict.fromkeys(touched_list)), None, False
             except Exception as exc:
                 return (), f"patch_rejected: invalid JSON patch ({exc})", False
@@ -675,8 +679,13 @@ class Verification:
                     if item.is_file():
                         rel = item.relative_to(resolved_cand).as_posix()
                         dest = after_dir / rel
+                        resolved_dest = dest.resolve()
+                        if not resolved_dest.is_relative_to(after_dir.resolve()):
+                            return (), f"patch_rejected: path escapes workspace: {rel}", False
                         if not dest.exists() or dest.read_bytes() != item.read_bytes():
-                            touched_dir_files.append(rel)
+                            touched_dir_files.append(
+                                resolved_dest.relative_to(after_dir.resolve()).as_posix()
+                            )
                         dest.parent.mkdir(parents=True, exist_ok=True)
                         shutil.copy2(item, dest)
                 return tuple(sorted(set(touched_dir_files))), None, False
