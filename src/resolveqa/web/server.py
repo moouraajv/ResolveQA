@@ -9,6 +9,7 @@ Routes (ephemeral / local-demo; no auth, no cloud):
   GET  /cases/<case_id>/timeline     -> HTML timeline for support (#15)
   POST /api/cases/<case_id>/reply    -> JSON customer reply compose (#17)
   POST /api/cases/<case_id>/delivery -> build local unpublished evidence package (#16)
+  POST /api/cases/<case_id>/advance  -> operator/demo advance (happy path or to_state)
   POST /form/cases             -> application/x-www-form-urlencoded create channel=form
   GET  /chat                   -> simulated messaging UI (permanent "Canal simulado" label)
   POST /chat/messages          -> form create via Intake channel=simulated_chat
@@ -19,6 +20,7 @@ Missing or blank client_id is refused with HTTP 400 and a clear error message.
 API/form behavior from issue #13 is preserved; chat reuses the same Intake instance.
 Timeline/reply never invent pipeline progress; they only reflect stored events / terminal state.
 CORS allow-list: RESOLVEQA_CORS_ORIGINS (comma/newline) or demo defaults (localhost:3000 + public front).
+Advance updates the ephemeral case store (+ events.jsonl) for Quadro sync; it does not run agents.
 """
 
 from __future__ import annotations
@@ -27,6 +29,7 @@ import html
 import json
 import os
 import re
+import uuid
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -39,10 +42,13 @@ from resolveqa.contracts import (
     ChannelType,
     ContractValidationError,
     Event,
+    EventSource,
+    EventType,
     ReportInput,
     RunState,
     Verdict,
 )
+from resolveqa.intake.service import utc_now_iso
 from resolveqa.intake import Intake
 from resolveqa.delivery import DeliveryBuilder, DeliveryError
 from resolveqa.playbook import Playbook, load_playbook
@@ -55,6 +61,7 @@ _CASE_TIMELINE_API_RE = re.compile(r"^/api/cases/([^/]+)/timeline$")
 _CASE_TIMELINE_HTML_RE = re.compile(r"^/cases/([^/]+)/timeline$")
 _CASE_REPLY_API_RE = re.compile(r"^/api/cases/([^/]+)/reply$")
 _CASE_DELIVERY_API_RE = re.compile(r"^/api/cases/([^/]+)/delivery$")
+_CASE_ADVANCE_API_RE = re.compile(r"^/api/cases/([^/]+)/advance$")
 _DEFAULT_RUNS_ROOT = Path("runs")
 _DEFAULT_CORS_ORIGINS = (
     "http://localhost:3000",
@@ -290,6 +297,11 @@ class IntakeRequestHandler(BaseHTTPRequestHandler):
             self._handle_delivery_api(delivery_api.group(1), raw)
             return
 
+        advance_api = _CASE_ADVANCE_API_RE.match(path)
+        if advance_api:
+            self._handle_advance_api(advance_api.group(1), raw)
+            return
+
         status, body, ctype = _error("not found", HTTPStatus.NOT_FOUND)
         self._write(status, body, ctype)
 
@@ -341,6 +353,80 @@ class IntakeRequestHandler(BaseHTTPRequestHandler):
                 if line:
                     events.append(Event.from_json(line))
         return events
+
+    def _handle_advance_api(self, case_id: str, raw: bytes) -> None:
+        """Operator/demo control: advance case state and persist to the ephemeral store."""
+        payload: dict[str, Any] = {}
+        if raw:
+            try:
+                parsed = json.loads(raw.decode("utf-8"))
+            except (UnicodeDecodeError, json.JSONDecodeError):
+                status, body, ctype = _error("invalid JSON body")
+                self._write(status, body, ctype)
+                return
+            if parsed is None:
+                parsed = {}
+            if not isinstance(parsed, dict):
+                status, body, ctype = _error("JSON body must be an object")
+                self._write(status, body, ctype)
+                return
+            payload = parsed
+
+        to_state = payload.get("to_state")
+        if to_state is not None and not isinstance(to_state, str):
+            status, body, ctype = _error("to_state must be a string when provided")
+            self._write(status, body, ctype)
+            return
+
+        try:
+            updated, previous = self.intake.advance(
+                case_id,
+                to_state=to_state.strip() if isinstance(to_state, str) and to_state.strip() else None,
+            )
+        except ContractValidationError as err:
+            message = str(err)
+            code = (
+                HTTPStatus.NOT_FOUND
+                if message.startswith("case_id not found")
+                else HTTPStatus.BAD_REQUEST
+            )
+            status, body, ctype = _error(message, code)
+            self._write(status, body, ctype)
+            return
+
+        ts = utc_now_iso()
+        event: Event | None = None
+        try:
+            store = EventStore(self.server.runs_root)
+            event = Event(
+                event_id=f"evt-{uuid.uuid4().hex}",
+                case_id=case_id,
+                seq=store.next_seq(case_id),
+                ts=ts,
+                source=EventSource.ORCHESTRATOR,
+                type=EventType.STATE_CHANGED,
+                from_state=previous,
+                to_state=updated.state,
+                reason=(
+                    payload["reason"].strip()
+                    if isinstance(payload.get("reason"), str) and payload["reason"].strip()
+                    else "Avanço manual pelo Quadro; sincronizado no armazenamento do backend."
+                ),
+                evidence_refs=(),
+            )
+            store.append(event)
+        except (EventStoreError, ContractValidationError):
+            event = None
+
+        status, body, ctype = _json_bytes(
+            {
+                "case": updated.to_dict(),
+                "event": event.to_dict() if event is not None else None,
+                "storage": "ephemeral-in-memory",
+                "note": "Estado atualizado no store do backend; não executa agentes.",
+            }
+        )
+        self._write(status, body, ctype)
 
     def _handle_reply_api(self, case_id: str, raw: bytes) -> None:
         case = self.intake.get(case_id)
