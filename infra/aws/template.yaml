@@ -234,7 +234,7 @@ Resources:
             echo "[ResolveQA] Checking service readiness on localhost..."
             READY=0
             for i in $(seq 1 30); do
-              HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -H "X-ResolveQA-Origin-Verify: ${OriginSecretHeader}" http://127.0.0.1:8080/health || echo "000")
+              HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" --config - http://127.0.0.1:8080/health <<< 'header = "X-ResolveQA-Origin-Verify: ${OriginSecretHeader}"' || echo "000")
               if [ "$HTTP_CODE" = "200" ]; then
                 READY=1
                 echo "[ResolveQA] Backend is ready and responding with HTTP 200."
