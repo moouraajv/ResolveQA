@@ -19,6 +19,10 @@ ENV_NAME="${3:-demo}"
 VPC_ID="${4:-<VPC_ID>}"
 SUBNET_ID="${5:-<SUBNET_ID>}"
 REGION="${AWS_REGION:-us-east-1}"
+if [ "${REGION}" != "us-east-1" ]; then
+  echo "[ERROR] This helper uses the us-east-1 CloudFront prefix list; deployments in other regions require region-specific CloudFrontPrefixListId parameters." >&2
+  exit 1
+fi
 
 echo "======================================================================"
 echo "ResolveQA AWS Deployment Workflow (Dry-Run Generator)"
