@@ -269,22 +269,81 @@ def build_delimited_messages(
     ]
 
 
+def _is_valid_builder_system_message(content: str) -> bool:
+    """Return True only if `content` was structured by `build_delimited_messages` with `INERT_DATA_SYSTEM_NOTICE`."""
+    if not isinstance(content, str) or not content.strip():
+        return False
+    if content == INERT_DATA_SYSTEM_NOTICE:
+        return True
+    if not content.endswith(f"\n\n{INERT_DATA_SYSTEM_NOTICE}"):
+        return False
+    prefix = content[: -len(f"\n\n{INERT_DATA_SYSTEM_NOTICE}")]
+    if _UNTRUSTED_TAG_BREAKOUT_RE.search(prefix):
+        return False
+    return True
+
+
 def _require_delimited_untrusted_messages(
     messages: list[dict[str, str]],
     active_case: Optional[RunState] = None,
 ) -> None:
-    """Verify that user messages carry delimited `<untrusted_data>` blocks and never raw report text."""
-    user_contents = [str(m.get("content", "")) for m in messages if str(m.get("role", "user")) == "user"]
-    combined_user = "\n".join(user_contents)
-    blocks = _DELIMITED_BLOCK_RE.findall(combined_user)
-    if not blocks:
+    """Verify ALL messages: require bound RunState, builder-only system messages, and strictly delimited user messages."""
+    if active_case is None or not isinstance(active_case, RunState):
         raise ValueError(
-            "Untrusted input in user messages must be wrapped with delimit_untrusted_data (<untrusted_data> tags)."
+            "A bound RunState (via LLMAdapter(case=...) or complete(..., case=...)) is required "
+            "to verify untrusted report delimitation (RNF-02, RNF-04)."
         )
-    if active_case is not None and active_case.report_text.strip():
-        outside = _DELIMITED_BLOCK_RE.sub("", combined_user)
-        if active_case.report_text.strip() in outside:
-            raise ValueError("Raw report_text cannot be passed outside <untrusted_data> delimiters.")
+    raw_report = active_case.report_text.strip() if isinstance(active_case.report_text, str) else ""
+    if not raw_report:
+        raise ValueError("Bound RunState must contain a non-empty report_text.")
+    redacted_report = redact_secrets(raw_report)
+
+    system_count = 0
+    user_count = 0
+    user_blocks: list[str] = []
+
+    for idx, msg in enumerate(messages):
+        if not isinstance(msg, dict):
+            raise ValueError(f"Message at index {idx} must be a dict, got {type(msg).__name__}.")
+        role = msg.get("role")
+        content = msg.get("content")
+        if role not in {"system", "user"}:
+            raise ValueError(
+                f"Invalid message role {role!r} at index {idx}: only 'system' and 'user' are allowed."
+            )
+        if not isinstance(content, str) or not content.strip():
+            raise ValueError(f"Message content at index {idx} must be a non-empty string.")
+
+        if role == "system":
+            system_count += 1
+            if not _is_valid_builder_system_message(content):
+                raise ValueError(
+                    "System message must be created by build_delimited_messages with INERT_DATA_SYSTEM_NOTICE as fixed marker."
+                )
+            if raw_report in content or (redacted_report and redacted_report in content):
+                raise ValueError("Raw report_text is forbidden inside system messages (RNF-02).")
+        elif role == "user":
+            user_count += 1
+            blocks = _DELIMITED_BLOCK_RE.findall(content)
+            if not blocks:
+                raise ValueError(
+                    "Untrusted input in user messages must be wrapped with delimit_untrusted_data (<untrusted_data> tags)."
+                )
+            outside = _DELIMITED_BLOCK_RE.sub("", content)
+            if outside.strip():
+                raise ValueError(
+                    "User messages must contain only <untrusted_data> blocks; raw text outside delimiters is forbidden."
+                )
+            user_blocks.extend(blocks)
+
+    if system_count == 0:
+        raise ValueError(
+            "Messages must include a system message built by build_delimited_messages with INERT_DATA_SYSTEM_NOTICE."
+        )
+    if user_count == 0 or not user_blocks:
+        raise ValueError(
+            "Messages must include at least one user message with <untrusted_data> blocks."
+        )
 
 
 class DeterministicMockLLM:
