@@ -1,0 +1,22 @@
+{
+  "currency": "USD",
+  "unit": "per_1m_tokens",
+  "label": "estimate",
+  "as_of": "2026-11-08T12:00:00Z",
+  "source": "https://api.featherless.ai/v1/models (pricing.input/output as USD per 1M tokens; snapshot for offline estimate)",
+  "mock_policy": "zero_cost",
+  "models": {
+    "featherless:Qwen/Qwen3-Coder-30B-A3B-Instruct": {
+      "input_per_1m": 0.1,
+      "output_per_1m": 0.2
+    },
+    "featherless:Qwen/Qwen3-30B-A3B-Instruct-2507": {
+      "input_per_1m": 0.1,
+      "output_per_1m": 0.2
+    },
+    "mock:deterministic-mock-v1": {
+      "input_per_1m": 0.0,
+      "output_per_1m": 0.0
+    }
+  }
+}

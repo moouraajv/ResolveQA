@@ -7,6 +7,7 @@ Routes (ephemeral / local-demo; no auth, no cloud):
   GET  /api/cases/<case_id>    -> JSON fetch by id
   GET  /api/cases/<case_id>/timeline -> JSON timeline from runs/<case_id>/events.jsonl (#15)
   GET  /cases/<case_id>/timeline     -> HTML timeline for support (#15)
+  GET  /api/cases/<case_id>/usage    -> JSON LLM usage + USD estimate (#60–#63)
   POST /api/cases/<case_id>/reply    -> JSON customer reply compose (#17)
   POST /api/cases/<case_id>/delivery -> build local unpublished evidence package (#16)
   POST /form/cases             -> application/x-www-form-urlencoded create channel=form
@@ -45,11 +46,13 @@ from resolveqa.delivery import DeliveryBuilder, DeliveryError
 from resolveqa.playbook import Playbook, load_playbook
 from resolveqa.reply import ReplyComposeError, ReplyComposer, ReplyOutcome
 from resolveqa.store import EventStore, EventStoreError
+from resolveqa.runtime import case_usage_summary
 from resolveqa.timeline import TimelineError, build_timeline_html, load_timeline, timeline_to_dict
 
 _CASE_ID_RE = re.compile(r"^/api/cases/([^/]+)$")
 _CASE_TIMELINE_API_RE = re.compile(r"^/api/cases/([^/]+)/timeline$")
 _CASE_TIMELINE_HTML_RE = re.compile(r"^/cases/([^/]+)/timeline$")
+_CASE_USAGE_API_RE = re.compile(r"^/api/cases/([^/]+)/usage$")
 _CASE_REPLY_API_RE = re.compile(r"^/api/cases/([^/]+)/reply$")
 _CASE_DELIVERY_API_RE = re.compile(r"^/api/cases/([^/]+)/delivery$")
 _DEFAULT_RUNS_ROOT = Path("runs")
@@ -185,6 +188,11 @@ class IntakeRequestHandler(BaseHTTPRequestHandler):
             self._handle_timeline_html(timeline_html.group(1))
             return
 
+        usage_api = _CASE_USAGE_API_RE.match(path)
+        if usage_api:
+            self._handle_usage_api(usage_api.group(1))
+            return
+
         match = _CASE_ID_RE.match(path)
         if match:
             case_id = match.group(1)
@@ -260,7 +268,35 @@ class IntakeRequestHandler(BaseHTTPRequestHandler):
             status, body, ctype = _error(str(err))
             self._write(status, body, ctype)
             return
-        status, body, ctype = _json_bytes(timeline_to_dict(case_id, entries))
+        payload = timeline_to_dict(case_id, entries)
+        try:
+            payload["usage"] = case_usage_summary(self.server.runs_root, case_id).to_dict()
+        except (OSError, ValueError, FileNotFoundError):
+            payload["usage"] = {
+                "case_id": case_id,
+                "currency": "USD",
+                "label": "estimate",
+                "llm_calls": 0,
+                "tokens_in": 0,
+                "tokens_out": 0,
+                "estimated_usd": 0.0,
+                "note": "sem uso LLM persistido",
+            }
+        status, body, ctype = _json_bytes(payload)
+        self._write(status, body, ctype)
+
+    def _handle_usage_api(self, case_id: str) -> None:
+        try:
+            summary = case_usage_summary(self.server.runs_root, case_id)
+        except FileNotFoundError as err:
+            status, body, ctype = _error(str(err), HTTPStatus.INTERNAL_SERVER_ERROR)
+            self._write(status, body, ctype)
+            return
+        except ValueError as err:
+            status, body, ctype = _error(str(err))
+            self._write(status, body, ctype)
+            return
+        status, body, ctype = _json_bytes(summary.to_dict())
         self._write(status, body, ctype)
 
     def _handle_timeline_html(self, case_id: str) -> None:
@@ -274,7 +310,12 @@ class IntakeRequestHandler(BaseHTTPRequestHandler):
             ).encode("utf-8")
             self._write(HTTPStatus.BAD_REQUEST, page, "text/html; charset=utf-8")
             return
-        page = build_timeline_html(case_id, entries).encode("utf-8")
+        usage = None
+        try:
+            usage = case_usage_summary(self.server.runs_root, case_id).to_dict()
+        except (OSError, ValueError, FileNotFoundError):
+            usage = None
+        page = build_timeline_html(case_id, entries, usage=usage).encode("utf-8")
         self._write(HTTPStatus.OK, page, "text/html; charset=utf-8")
 
     def _load_case_events(self, case_id: str) -> list[Event]:

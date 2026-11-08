@@ -722,6 +722,7 @@ class DeterministicMockLLM:
         timeout_s: Optional[float] = None,
         transport: Optional[Callable[[str, dict[str, str], bytes, float], dict[str, Any]]] = None,
         config_path: Optional[Path | str] = None,
+        usage_store: Optional[Any] = None,
     ) -> None:
         self.config: LLMConfig = load_llm_config(config_path if config_path is not None else DEFAULT_LLM_CONFIG_PATH)
         self._case: Optional[RunState] = None
@@ -741,6 +742,7 @@ class DeterministicMockLLM:
         self.env_file_path = Path(env_file_path).expanduser() if env_file_path is not None else Path(self.config.env_file).expanduser()
         self.timeout_s = float(timeout_s) if timeout_s is not None else float(self.config.timeout_s)
         self.transport = transport
+        self.usage_store = usage_store
         self.audit_log: list[dict[str, Any]] = []
         if case is not None:
             self.bind_case(case, initial_llm_calls=initial_llm_calls)
@@ -897,6 +899,9 @@ class DeterministicMockLLM:
                 "mock": result.mock,
             }
         )
+        if self.usage_store is not None and active_case is not None:
+            # Persist tokens only — never prompt bodies (RNF-01 / issue #61).
+            self.usage_store.record(case_id=active_case.case_id, purpose=norm_purpose, result=result)
         return result
 
     def _build_outbound_messages(self, purpose: str, messages: list[dict[str, str]]) -> list[dict[str, str]]:
