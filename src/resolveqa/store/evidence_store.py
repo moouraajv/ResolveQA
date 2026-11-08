@@ -80,15 +80,21 @@ class EvidenceStore:
 
     def case_dir(self, case_id: str) -> Path:
         safe_case_id = _validate_safe_identifier(case_id, "case_id")
-        target = (self.runs_root / safe_case_id).resolve()
+        raw_target = self.runs_root / safe_case_id
+        if raw_target.is_symlink():
+            raise ValueError(f"Symlink not allowed for case_dir: {case_id!r}")
+        target = raw_target.resolve()
         if not target.is_relative_to(self.runs_root):
             raise ValueError(f"case_id resolves outside runs_root: {case_id!r}")
         return target
 
     def evidence_dir(self, case_id: str) -> Path:
         c_dir = self.case_dir(case_id)
-        ev_dir = (c_dir / "evidence").resolve()
-        if not ev_dir.is_relative_to(c_dir):
+        raw_ev_dir = c_dir / "evidence"
+        if raw_ev_dir.is_symlink():
+            raise ValueError(f"Symlink not allowed for evidence directory: {case_id!r}")
+        ev_dir = raw_ev_dir.resolve()
+        if not ev_dir.is_relative_to(c_dir) or not ev_dir.is_relative_to(self.runs_root):
             raise ValueError(f"evidence directory resolves outside case_dir: {case_id!r}")
         return ev_dir
 
@@ -135,7 +141,10 @@ class EvidenceStore:
         ev_dir.mkdir(parents=True, exist_ok=True)
 
         rel_path = f"evidence/{safe_ev_id}.{safe_ext}"
-        full_path = (c_dir / rel_path).resolve()
+        raw_full_path = c_dir / rel_path
+        if raw_full_path.is_symlink():
+            raise ValueError(f"Symlink not allowed for evidence file: {rel_path}")
+        full_path = raw_full_path.resolve()
         if not full_path.is_relative_to(c_dir) or not full_path.is_relative_to(self.runs_root):
             raise ValueError(f"Evidence path resolves outside case directory: {rel_path}")
 

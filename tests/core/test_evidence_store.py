@@ -129,6 +129,18 @@ class TestEvidenceStore(unittest.TestCase):
                                 content="x",
                             )
 
+            # Also block symlink traversal on case_dir or evidence_dir
+            with tempfile.TemporaryDirectory() as outside_tmp:
+                symlink_case = Path(tmp) / "case-symlink"
+                symlink_case.symlink_to(outside_tmp)
+                with self.assertRaises(ValueError):
+                    store.save_evidence(
+                        case_id="case-symlink",
+                        evidence_id="ev-001",
+                        kind=EvidenceKind.REPORT,
+                        content="x",
+                    )
+
     def test_does_not_depend_on_sandbox_executor_for_secret_redaction(self) -> None:
         source_path = Path(__file__).resolve().parents[2] / "src" / "resolveqa" / "store" / "evidence_store.py"
         source_text = source_path.read_text(encoding="utf-8")
