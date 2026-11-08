@@ -9,14 +9,16 @@ import json
 import os
 import posixpath
 import re
+import secrets
 import shlex
 import shutil
 import sys
 import tempfile
 import time
+import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 from resolveqa.contracts import (
     ContractValidationError,
@@ -80,8 +82,26 @@ import unittest
 _SCALARS = (bool, int, float, str, bytes)
 
 
+def _rqa_kind(value):
+    kind = type(value)
+    if kind is bool:
+        return "bool"
+    if kind is int or kind is float:
+        return "number"
+    if kind is str:
+        return "str"
+    if kind is bytes:
+        return "bytes"
+    if isinstance(value, _SCALARS):
+        return "forged"
+    return None
+
+
 def _rqa_check(first, second):
-    if (isinstance(first, _SCALARS) or isinstance(second, _SCALARS)) and type(first) is not type(second):
+    kind_first, kind_second = _rqa_kind(first), _rqa_kind(second)
+    if kind_first is None and kind_second is None:
+        return
+    if "forged" in (kind_first, kind_second) or kind_first != kind_second:
         raise AssertionError(
             "RQA_TYPE_MISMATCH: %s != %s" % (type(first).__name__, type(second).__name__)
         )
@@ -95,8 +115,8 @@ def pytest_configure(config):
     original_assert_equal = unittest.TestCase.assertEqual
 
     def assert_equal(self, first, second, msg=None):
-        original_assert_equal(self, first, second, msg)
         _rqa_check(first, second)
+        original_assert_equal(self, first, second, msg)
 
     unittest.TestCase.assertEqual = assert_equal
 
@@ -632,6 +652,59 @@ def _flagged_spoofing_nodes(source: str) -> dict[str, str]:
     return flagged
 
 
+_BANNED_NAMES = frozenset({"__builtins__", "__import__", "importlib", "globals", "locals", "vars"})
+_BANNED_ATTRS = frozenset(
+    {"__builtins__", "__import__", "__subclasses__", "__globals__", "__code__", "__closure__", "__dict__"}
+)
+_FRAMEWORK_TOKENS = ("pytest", "unittest")
+_DYNAMIC_ATTR_FUNCS = frozenset({"getattr", "setattr", "delattr"})
+
+
+def _fold_constant_str(node: ast.AST) -> Optional[str]:
+    """Constant-fold string literals joined with `+` (e.g. '_pyt' + 'est')."""
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+        left, right = _fold_constant_str(node.left), _fold_constant_str(node.right)
+        if left is not None and right is not None:
+            return left + right
+    return None
+
+
+def _ast_target_code_violations(source: str) -> list[str]:
+    """AST-level bans for target code: builtins/introspection escapes, dynamic attribute access, test-framework access."""
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return ["patched code is not valid Python"]
+    found: list[str] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name) and node.id in _BANNED_NAMES:
+            found.append(f"use of '{node.id}'")
+        elif isinstance(node, ast.Attribute) and node.attr in _BANNED_ATTRS:
+            found.append(f"access to '.{node.attr}'")
+        elif isinstance(node, ast.Call):
+            tokens = _attr_or_name_tokens(node.func)
+            if tokens and tokens[-1] in _DYNAMIC_ATTR_FUNCS:
+                name_arg = node.args[1] if len(node.args) > 1 else None
+                if not (isinstance(name_arg, ast.Constant) and isinstance(name_arg.value, str)):
+                    found.append(f"{tokens[-1]}() with a non-literal attribute name")
+        elif isinstance(node, (ast.Import, ast.ImportFrom)):
+            modules = [alias.name for alias in node.names]
+            if isinstance(node, ast.ImportFrom) and node.module:
+                modules.append(node.module)
+            for module in modules:
+                root = module.split(".")[0].lstrip("_")
+                if root in _FRAMEWORK_TOKENS or root == "importlib":
+                    found.append(f"import of test framework/loader module '{module}'")
+        text = _fold_constant_str(node) if isinstance(node, (ast.Constant, ast.BinOp)) else None
+        if text is not None and any(tok in text.lower() for tok in _FRAMEWORK_TOKENS):
+            found.append("string referring to a test framework module")
+        if isinstance(node, ast.Name) and node.id.lstrip("_") in _FRAMEWORK_TOKENS:
+            found.append(f"reference to test framework '{node.id}'")
+    return sorted(dict.fromkeys(found))
+
+
 def _inspect_patch_hardening(
     before_dir: Path,
     after_dir: Path,
@@ -662,6 +735,12 @@ def _inspect_patch_hardening(
                 continue
             reasons.append(
                 f"patch_rejected: patched file '{rel_path}' contains forbidden pytest hook/dynamic import construct '{match}'"
+            )
+        for violation in _ast_target_code_violations(source):
+            if violation in _ast_target_code_violations(before_source):
+                continue
+            reasons.append(
+                f"patch_rejected: patched file '{rel_path}' target code violation: {violation}"
             )
         before_flags = _flagged_spoofing_nodes(before_source)
         for dump, description in _flagged_spoofing_nodes(source).items():
@@ -718,16 +797,268 @@ def _check_before_red_matches_report(
         )
         return reasons
     assertion_lines = "\n".join(m.group(1) for m in _E_LINE_RE.finditer(log))
-    if "AssertionError" not in assertion_lines:
+    if "AssertionError" not in assertion_lines and not re.search(r"^assert\b", assertion_lines, re.MULTILINE):
         reasons.append("test_invalid: before test did not fail with AssertionError")
     else:
-        missing = [t for t in tokens if t not in assertion_lines]
+        log_tokens = _EXPECTED_TOKEN_RE.findall(assertion_lines)
+        log_nums: list[float] = []
+        for lt in log_tokens:
+            try:
+                log_nums.append(float(lt.replace(",", ".")))
+            except ValueError:
+                pass
+        missing = []
+        for t in tokens:
+            if t in assertion_lines:
+                continue
+            try:
+                t_val = float(t.replace(",", "."))
+                if any(abs(t_val - ln) < 1e-4 for ln in log_nums):
+                    continue
+            except ValueError:
+                pass
+            missing.append(t)
         if missing:
             reasons.append(
                 f"test_invalid: before AssertionError does not contain the reported value(s) {missing} "
                 "(failing_assertion); the RED does not reproduce the report"
             )
     return reasons
+
+
+# ---------------------------------------------------------------------------------------------
+# Black-box oracle (outside pytest): a fresh isolated interpreter imports only the target module, calls the
+# function with the literal inputs of the reproduction test and writes {kind, value} JSON to a nonce-named
+# file created by the verifier. The comparison with the expected value happens in the verifier process.
+# ---------------------------------------------------------------------------------------------
+_ORACLE_SCRIPT = '''\
+import json, os, sys
+
+out_path, module_name, func_name, call_json = sys.argv[1:5]
+sys.argv = ["oracle"]
+sys.path.insert(0, os.getcwd())
+payload = {"kind": "error", "value": None}
+try:
+    args, kwargs = json.loads(call_json)
+    module = __import__(module_name, fromlist=["_"])
+    result = getattr(module, func_name)(*args, **kwargs)
+    kind = type(result)
+    if kind is bool:
+        payload = {"kind": "bool", "value": result}
+    elif kind is int:
+        payload = {"kind": "int", "value": result}
+    elif kind is float:
+        payload = {"kind": "float", "value": result}
+    elif kind is str:
+        payload = {"kind": "str", "value": result}
+    else:
+        payload = {"kind": "other", "value": kind.__module__ + "." + kind.__qualname__}
+except BaseException as exc:
+    payload = {"kind": "error", "value": type(exc).__name__}
+with open(out_path, "w", encoding="utf-8") as handle:
+    json.dump(payload, handle)
+'''
+
+
+@dataclass(frozen=True)
+class OracleSpec:
+    """Black-box call derived statically from the reproduction test."""
+
+    module: str
+    function: str
+    args: tuple[Any, ...]
+    kwargs: dict[str, Any]
+    expected_literal: Any
+
+
+class _Unresolvable(Exception):
+    pass
+
+
+def _literal_value(node: ast.AST, env: dict[str, ast.AST], depth: int = 0) -> Any:
+    if depth > 8:
+        raise _Unresolvable("too deep")
+    if isinstance(node, ast.Constant) and isinstance(node.value, (int, float, str, bool, type(None))):
+        return node.value
+    if isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.USub, ast.UAdd)):
+        value = _literal_value(node.operand, env, depth + 1)
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            return -value if isinstance(node.op, ast.USub) else value
+    if isinstance(node, ast.Name) and node.id in env:
+        return _literal_value(env[node.id], env, depth + 1)
+    if isinstance(node, (ast.List, ast.Tuple)):
+        return [_literal_value(el, env, depth + 1) for el in node.elts]
+    raise _Unresolvable(ast.dump(node)[:60])
+
+
+def _resolve_name(node: ast.AST, env: dict[str, ast.AST], depth: int = 0) -> ast.AST:
+    while isinstance(node, ast.Name) and node.id in env and depth < 8:
+        node = env[node.id]
+        depth += 1
+    return node
+
+
+def _imported_target_symbols(tree: ast.AST) -> tuple[dict[str, tuple[str, str]], dict[str, str]]:
+    """`(functions, modules)`: names imported from non-stdlib modules."""
+    stdlib = set(getattr(sys, "stdlib_module_names", ())) | {"__future__"}
+    functions: dict[str, tuple[str, str]] = {}
+    modules: dict[str, str] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+            if node.module.split(".")[0] not in stdlib:
+                for alias in node.names:
+                    functions[alias.asname or alias.name] = (node.module, alias.name)
+        elif isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name.split(".")[0] not in stdlib:
+                    modules[alias.asname or alias.name.split(".")[0]] = alias.name
+    return functions, modules
+
+
+def derive_oracle_specs(test_source: str) -> list[OracleSpec]:
+    """All `target_call(literal args) == literal` equality assertions of the test, in source order."""
+    try:
+        tree = ast.parse(test_source)
+    except SyntaxError:
+        return []
+    functions, modules = _imported_target_symbols(tree)
+    specs: list[OracleSpec] = []
+    for func in ast.walk(tree):
+        if not (isinstance(func, (ast.FunctionDef, ast.AsyncFunctionDef)) and func.name.startswith("test_")):
+            continue
+        env: dict[str, ast.AST] = {}
+        for stmt in ast.walk(func):
+            if isinstance(stmt, ast.Assign) and len(stmt.targets) == 1 and isinstance(stmt.targets[0], ast.Name):
+                env[stmt.targets[0].id] = stmt.value
+        for node in ast.walk(func):
+            operands: Optional[tuple[ast.AST, ast.AST]] = None
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr in {"assertEqual", "assertEquals", "assertAlmostEqual", "assertAlmostEquals"}
+                and len(node.args) >= 2
+            ):
+                operands = (node.args[0], node.args[1])
+            elif (
+                isinstance(node, ast.Assert)
+                and isinstance(node.test, ast.Compare)
+                and len(node.test.ops) == 1
+                and isinstance(node.test.ops[0], ast.Eq)
+            ):
+                operands = (node.test.left, node.test.comparators[0])
+            if operands is None:
+                continue
+            for call_side, literal_side in (operands, operands[::-1]):
+                call = _resolve_name(call_side, env)
+                if not isinstance(call, ast.Call):
+                    continue
+                if isinstance(call.func, ast.Name) and call.func.id in functions:
+                    module, name = functions[call.func.id]
+                elif (
+                    isinstance(call.func, ast.Attribute)
+                    and isinstance(call.func.value, ast.Name)
+                    and call.func.value.id in modules
+                ):
+                    module, name = modules[call.func.value.id], call.func.attr
+                else:
+                    continue
+                try:
+                    args = tuple(_literal_value(a, env) for a in call.args)
+                    kwargs = {k.arg: _literal_value(k.value, env) for k in call.keywords if k.arg}
+                    if len(kwargs) != len(call.keywords):
+                        continue
+                    expected = _literal_value(literal_side, env)
+                except _Unresolvable:
+                    continue
+                specs.append(OracleSpec(module, name, args, kwargs, expected))
+                break
+    return specs
+
+
+def _fold(text: str) -> str:
+    decomposed = unicodedata.normalize("NFKD", text)
+    return "".join(ch for ch in decomposed if not unicodedata.combining(ch)).lower()
+
+
+# Same marker set as the triage stage (expected / observed role markers), accent/case-insensitive.
+_EXPECTED_MARKERS = (
+    r"esperad[oa]", r"deveria\s+ser", r"deveria\s+dar", r"o\s+certo\s+era", r"o\s+correto\s+era",
+    r"o\s+certo\s+seria", r"o\s+correto\s+seria", r"era\s+para\s+ser", r"seria",
+)
+_OBSERVED_MARKERS = (
+    r"observad[oa]", r"cobrad[oa]", r"cobraram", r"cobrou", r"paguei", r"pago", r"ficou", r"saiu", r"deu",
+    r"total\s+foi", r"valor\s+foi", r"continuou",
+)
+
+
+def _parse_amount(raw: str) -> Optional[float]:
+    token = raw.strip().strip(".,")
+    if not token:
+        return None
+    if "," in token:
+        token = token.replace(".", "").replace(",", ".")
+    elif re.fullmatch(r"\d{1,3}(?:\.\d{3})+", token):
+        token = token.replace(".", "")
+    try:
+        return round(float(token), 4)
+    except ValueError:
+        return None
+
+
+def _report_numbers(text: str) -> tuple[list[float], list[float]]:
+    """`(amounts, percents)` found in free text."""
+    folded = _fold(text)
+    percents = [v for v in (_parse_amount(m) for m in re.findall(r"(\d+(?:[.,]\d+)?)\s*%", folded)) if v is not None]
+    without_pct = re.sub(r"\d+(?:[.,]\d+)?\s*%", " ", folded)
+    amounts = [
+        v
+        for v in (_parse_amount(m) for m in re.findall(r"\d+(?:[.,]\d+)*", without_pct))
+        if v is not None
+    ]
+    return amounts, percents
+
+
+def _role_values(report_text: str, markers: tuple[str, ...]) -> list[float]:
+    pattern = re.compile(r"\b(?:" + "|".join(markers) + r")\b[^0-9]{0,30}(?:r\$\s*)?(\d+(?:[.,]\d+)*)")
+    values = [_parse_amount(m.group(1)) for m in pattern.finditer(_fold(report_text))]
+    return [v for v in values if v is not None]
+
+
+def _report_expectations(report_text: str) -> tuple[list[float], list[float], set[float]]:
+    """`(expected_candidates, observed_candidates, grounded_numbers)` from the customer report."""
+    amounts, percents = _report_numbers(report_text)
+    grounded = set(amounts) | set(percents)
+    derived = {round(n * (1 - p / 100.0), 2) for n in amounts for p in percents if 0 < p < 100}
+    expected = _role_values(report_text, _EXPECTED_MARKERS) or sorted(set(amounts) | derived)
+    observed = _role_values(report_text, _OBSERVED_MARKERS) or sorted(set(amounts))
+    return expected, observed, grounded
+
+
+def _numbers_in(value: Any) -> list[float]:
+    if isinstance(value, bool):
+        return []
+    if isinstance(value, (int, float)):
+        return [float(value)]
+    if isinstance(value, str):
+        return [v for v in (_parse_amount(m) for m in re.findall(r"\d+(?:[.,]\d+)*", value)) if v is not None]
+    return []
+
+
+def _any_close(values: list[float], candidates: list[float]) -> bool:
+    return any(abs(v - c) < 1e-6 for v in values for c in candidates)
+
+
+def _oracle_value_matches(payload: dict[str, Any], target: Any = None, candidates: Optional[list[float]] = None) -> bool:
+    kind, value = payload.get("kind"), payload.get("value")
+    if kind not in {"int", "float", "str"}:
+        return False
+    if target is not None:
+        if isinstance(target, str) or kind == "str":
+            return isinstance(target, str) and kind == "str" and value == target
+        return isinstance(target, (int, float)) and not isinstance(target, bool) and abs(float(value) - float(target)) < 1e-9
+    if candidates is not None:
+        return _any_close(_numbers_in(value), candidates)
+    return False
 
 
 class Verification:
@@ -976,6 +1307,40 @@ class Verification:
             exec_res,
         )
 
+    def _run_oracle(
+        self, workdir: Path, out_dir: Path, spec: OracleSpec
+    ) -> tuple[Optional[dict[str, Any]], str, bool]:
+        """Run the black-box oracle in a fresh isolated interpreter. Returns `(payload, note, timed_out)`."""
+        out_dir.mkdir(mode=0o700, exist_ok=True)
+        nonce = secrets.token_hex(16)
+        script = out_dir / f"oracle_{nonce}.py"
+        out_file = out_dir / f"oracle_{nonce}.json"
+        script.write_text(_ORACLE_SCRIPT, encoding="utf-8")
+        os.close(os.open(out_file, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600))
+        call_json = json.dumps([list(spec.args), spec.kwargs])
+        command = shlex.join(
+            [sys.executable, "-I", "-S", str(script), str(out_file), spec.module, spec.function, call_json]
+        )
+        _run, exec_res = self._exec_test_run(workdir, command)
+        if exec_res.timed_out:
+            return None, "oracle timed out", True
+        try:
+            payload = json.loads(out_file.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            payload = None
+        if not isinstance(payload, dict):
+            return None, f"oracle produced no result (exit_code={exec_res.exit_code})", False
+        return payload, f"oracle {spec.module}.{spec.function} -> {payload.get('kind')}:{payload.get('value')!r}", False
+
+    @staticmethod
+    def _annotate_run(run: TestRun, note: str) -> TestRun:
+        return TestRun(
+            command=run.command,
+            exit_code=run.exit_code,
+            duration_s=run.duration_s,
+            log_ref=f"{run.log_ref}\n[{note}]",
+        )
+
     @staticmethod
     def _sentinel_test_run(command: str, exit_code: int = 1, log_ref: str = "not executed") -> TestRun:
         return TestRun(command=command, exit_code=exit_code, duration_s=0.0, log_ref=log_ref)
@@ -1108,6 +1473,37 @@ class Verification:
         before_test_text = before_test_bytes.decode("utf-8", errors="replace")
         before_oracle = inspect_test_oracle(before_test_text)
         rejection_reasons.extend(before_oracle.reasons)
+
+        # Black-box oracle inputs must come from the reproduction test AND agree with the report (X2).
+        report_expected, report_observed, report_grounded = _report_expectations(case.report_text)
+        oracle_spec: Optional[OracleSpec] = None
+        oracle_specs = derive_oracle_specs(before_test_text)
+        if not oracle_specs:
+            rejection_reasons.append(
+                "test_invalid: cannot derive a black-box oracle (need an equality assertion between a target "
+                "function call with literal inputs and a literal expected value)"
+            )
+        else:
+            matching = [
+                sp for sp in oracle_specs if _any_close(_numbers_in(sp.expected_literal), report_expected)
+            ]
+            if not matching:
+                rejection_reasons.append(
+                    "test_invalid: expected value of the reproduction test does not match the report/triage "
+                    f"(test expects {oracle_specs[0].expected_literal!r}, report expects {report_expected})"
+                )
+            else:
+                oracle_spec = matching[0]
+                call_numbers = [
+                    n
+                    for value in (*oracle_spec.args, *oracle_spec.kwargs.values())
+                    for n in _numbers_in(value)
+                ]
+                ungrounded = [n for n in call_numbers if not _any_close([n], list(report_grounded))]
+                if ungrounded:
+                    rejection_reasons.append(
+                        f"test_invalid: reproduction inputs {ungrounded} do not appear in the customer report"
+                    )
 
         with self._staging_root() as staging_dir:
             before_dir = staging_dir / "before"
@@ -1297,6 +1693,35 @@ class Verification:
                     reasons=tuple(dict.fromkeys(rejection_reasons)),
                 )
 
+            # 1b. Black-box oracle on `before`: the target must really return the value observed in the report.
+            oracle_dir = staging_dir / "oracle_out"
+            assert oracle_spec is not None
+            before_payload, before_note, before_timeout = self._run_oracle(before_dir, oracle_dir, oracle_spec)
+            if before_timeout:
+                return Verdict(
+                    before=before_run,
+                    after=self._sentinel_test_run(single_test_cmd, exit_code=124, log_ref="oracle timeout"),
+                    suite=self._sentinel_test_run(self.suite_command, exit_code=124, log_ref="oracle timeout"),
+                    base_revision=base_revision,
+                    fix_revision=fix_revision,
+                    result=VerdictResult.ENV_ERROR,
+                    reasons=("infra_error: black-box oracle timed out on the before revision",),
+                )
+            before_run = self._annotate_run(before_run, before_note)
+            if before_payload is None or not _oracle_value_matches(before_payload, candidates=report_observed):
+                return Verdict(
+                    before=before_run,
+                    after=self._sentinel_test_run(single_test_cmd, exit_code=1, log_ref="skipped after oracle failure"),
+                    suite=self._sentinel_test_run(self.suite_command, exit_code=1, log_ref="skipped after oracle failure"),
+                    base_revision=base_revision,
+                    fix_revision=fix_revision,
+                    result=VerdictResult.REJECTED,
+                    reasons=(
+                        "oracle_failed: black-box call on the base revision did not return the value observed "
+                        f"in the report ({before_note})",
+                    ),
+                )
+
             # 2. Execute `after` test run
             if after_test_file.is_file():
                 after_run, after_exec = self._exec_test_run(after_dir, after_test_cmd)
@@ -1335,6 +1760,27 @@ class Verification:
             elif not _PASSED_SUMMARY_RE.search(after_run.log_ref):
                 rejection_reasons.append(
                     "after_not_green: after test run exited 0 without recording any passed test"
+                )
+
+            # 2b. Black-box oracle on `after`: must return exactly the expected value, outside pytest.
+            after_payload, after_note, after_timeout = self._run_oracle(after_dir, oracle_dir, oracle_spec)
+            if after_timeout:
+                return Verdict(
+                    before=before_run,
+                    after=after_run,
+                    suite=self._sentinel_test_run(self.suite_command, exit_code=124, log_ref="oracle timeout"),
+                    base_revision=base_revision,
+                    fix_revision=fix_revision,
+                    result=VerdictResult.ENV_ERROR,
+                    reasons=("infra_error: black-box oracle timed out on the patched revision",),
+                )
+            after_run = self._annotate_run(after_run, after_note)
+            if after_payload is None or not _oracle_value_matches(
+                after_payload, target=oracle_spec.expected_literal
+            ):
+                rejection_reasons.append(
+                    "oracle_failed: black-box call on the patched revision did not return the expected value "
+                    f"({after_note})"
                 )
 
             # 3. Execute `suite` test run on patched workspace

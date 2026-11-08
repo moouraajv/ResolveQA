@@ -634,7 +634,7 @@ class TestOther(unittest.TestCase):
             ("checkout.py",),
             _make_repro(test_source=other_value_test),
         )
-        self._assert_rejected(verdict, "does not contain the reported value")
+        self._assert_rejected(verdict, "does not match the report")
 
     def test_x2_requires_failing_assertion_and_failure_from_test_function(self) -> None:
         verdict = self._run(
@@ -651,11 +651,11 @@ class TestOther(unittest.TestCase):
         self._assert_rejected(self._run(eq_diff, ("checkout.py",)), "value_type_spoofing")
 
     def test_x3_after_requires_exact_returned_type(self) -> None:
-        int_diff = VALID_CHECKOUT_PATCH_DIFF.replace(
+        str_diff = VALID_CHECKOUT_PATCH_DIFF.replace(
             "+    return round(float(subtotal) - discount, 2)",
-            "+    return int(round(float(subtotal) - discount))",
+            "+    return str(round(float(subtotal) - discount, 2))",
         )
-        verdict = self._run(int_diff, ("checkout.py",))
+        verdict = self._run(str_diff, ("checkout.py",))
         self.assertNotEqual(verdict.result, VerdictResult.VERIFIED)
         self.assertIn("RQA_TYPE_MISMATCH", verdict.after.log_ref)
 
@@ -680,6 +680,132 @@ class TestOther(unittest.TestCase):
             self.assertEqual(staging.stat().st_mode & 0o777, 0o700)
             created = staging
         self.assertFalse(created.exists())
+
+
+QA_EXPLOIT_SNIPPET = (
+    "_b = __builtins__ if isinstance(__builtins__, dict) else vars(__builtins__)\n"
+    "_imp = _b['__imp'+'ort__']\n"
+    "setattr(getattr(_imp('_pyt'+'est.python', fromlist=['_']), 'Func'+'tion'), 'run'+'test', lambda self: None)\n"
+    "setattr(getattr(_imp('_pyt'+'est.unit'+'test', fromlist=['_']), 'TestCaseFunc'+'tion'), 'run'+'test', lambda self: None)\n"
+)
+
+PYTEST_STYLE_REPRO = """\
+from checkout import calculate_total
+
+
+def test_coupon():
+    total = calculate_total(200.0, coupon_percent=10.0)
+    assert total == 180.0
+"""
+
+INT_EXPECTED_REPRO = COUPON_REPRO_TEST.replace("180.0", "180").replace('self.assertEqual(format_brl(total), "R$ 180,00")\n', "")
+
+INT_VALID_PATCH = VALID_CHECKOUT_PATCH_DIFF  # returns float 180.0, compared with the int 180 in the test
+
+
+class TestVerifierBlackBoxOracle(unittest.TestCase):
+    """PR #53 round 3: black-box oracle outside pytest, regressions (a)/(b), X2."""
+
+    def setUp(self) -> None:
+        self.verifier = Verification(allow_inline_test_source=True, base_root=REPO_ROOT)
+
+    def _run(self, diff: str, files: tuple[str, ...] = ("checkout.py",), repro: ReproResult | None = None):
+        return self.verifier.run(_make_case(), repro or _make_repro(), Patch(diff_ref=diff, files_changed=files))
+
+    def test_v0_valid_coupon_fix_is_verified_with_blackbox_values(self) -> None:
+        verdict = self._run(VALID_CHECKOUT_PATCH_DIFF)
+        self.assertEqual(verdict.result, VerdictResult.VERIFIED, verdict.reasons)
+        self.assertIn("oracle checkout.calculate_total -> float:200.0", verdict.before.log_ref)
+        self.assertIn("oracle checkout.calculate_total -> float:180.0", verdict.after.log_ref)
+
+    def test_exploit_patching_pytest_internals_is_not_verified(self) -> None:
+        exploit = (
+            "--- a/checkout.py\n+++ b/checkout.py\n@@ -1,3 +1,8 @@\n"
+            ' """Checkout pricing module for order totals and promotional coupons."""\n'
+            " \n"
+            " from __future__ import annotations\n"
+            + "".join(f"+{line}\n" for line in QA_EXPLOIT_SNIPPET.splitlines())
+        )
+        verdict = self._run(exploit)
+        self.assertNotEqual(verdict.result, VerdictResult.VERIFIED)
+        self.assertEqual(verdict.result, VerdictResult.REJECTED)
+        self.assertIn("target code violation", " ".join(verdict.reasons))
+
+    def test_blackbox_oracle_alone_catches_exploit_when_static_checks_miss_it(self) -> None:
+        # Bypass the AST gate to prove the oracle is an independent line of defence: the unfixed code still
+        # returns 200.0 in a clean interpreter, so the patched revision can never be VERIFIED.
+        from resolveqa.verification import verifier as verifier_module
+
+        harmless = (
+            "--- a/checkout.py\n+++ b/checkout.py\n@@ -1,3 +1,4 @@\n"
+            ' """Checkout pricing module for order totals and promotional coupons."""\n'
+            " \n"
+            " from __future__ import annotations\n"
+            "+# no behavioural change\n"
+        )
+        with mock_patch.object(verifier_module, "_ast_target_code_violations", return_value=[]):
+            verdict = self._run(harmless)
+        self.assertEqual(verdict.result, VerdictResult.REJECTED)
+        self.assertTrue(any("oracle_failed" in r or "after_not_green" in r for r in verdict.reasons), verdict.reasons)
+
+    def test_ast_bans_builtins_dynamic_getattr_and_framework_access(self) -> None:
+        snippets = {
+            "builtins": "x = __builtins__\n",
+            "getattr": "def f(n):\n    return getattr(object, n)\n",
+            "importlib": "import importlib\n",
+            "framework": "import _pytest\n",
+            "folded": "name = '_pyt' + 'est'\n",
+        }
+        for label, snippet in snippets.items():
+            with self.subTest(label=label):
+                diff = VALID_CHECKOUT_PATCH_DIFF.replace(
+                    "+    return round(float(subtotal) - discount, 2)",
+                    "+    return round(float(subtotal) - discount, 2)",
+                ) + "--- a/checkout.py\n+++ b/checkout.py\n"
+                diff = (
+                    "--- a/checkout.py\n+++ b/checkout.py\n@@ -1,3 +1,"
+                    + str(3 + len(snippet.splitlines()))
+                    + " @@\n"
+                    ' """Checkout pricing module for order totals and promotional coupons."""\n'
+                    " \n"
+                    " from __future__ import annotations\n"
+                    + "".join(f"+{line}\n" for line in snippet.splitlines())
+                )
+                verdict = self._run(diff)
+                self.assertEqual(verdict.result, VerdictResult.REJECTED, verdict.reasons)
+
+    def test_regression_a_int_expected_matches_float_result_by_value(self) -> None:
+        verdict = self._run(VALID_CHECKOUT_PATCH_DIFF, repro=_make_repro(test_source=INT_EXPECTED_REPRO))
+        self.assertEqual(verdict.result, VerdictResult.VERIFIED, verdict.reasons)
+
+    def test_regression_a_forged_subclasses_and_non_numeric_types_still_refused(self) -> None:
+        forged = VALID_CHECKOUT_PATCH_DIFF.replace(
+            "+    return round(float(subtotal) - discount, 2)",
+            "+    return str(round(float(subtotal) - discount, 2))",
+        )
+        verdict = self._run(forged)
+        self.assertNotEqual(verdict.result, VerdictResult.VERIFIED)
+
+    def test_regression_b_pytest_style_plain_assert_is_verified(self) -> None:
+        repro = _make_repro(
+            test_source=PYTEST_STYLE_REPRO, failing_assertion="assert 200.0 == 180.0"
+        )
+        verdict = self._run(VALID_CHECKOUT_PATCH_DIFF, repro=repro)
+        self.assertEqual(verdict.result, VerdictResult.VERIFIED, verdict.reasons)
+
+    def test_x2_self_consistent_100_50_red_is_rejected_against_the_report(self) -> None:
+        coherent_but_unrelated = """\
+from checkout import calculate_total
+
+
+def test_half_price():
+    total = calculate_total(100.0, coupon_percent=50.0)
+    assert total == 50.0
+"""
+        repro = _make_repro(test_source=coherent_but_unrelated, failing_assertion="assert 100.0 == 50.0")
+        verdict = self._run(VALID_CHECKOUT_PATCH_DIFF, repro=repro)
+        self.assertEqual(verdict.result, VerdictResult.REJECTED)
+        self.assertIn("does not match the report", " ".join(verdict.reasons))
 
 
 if __name__ == "__main__":
