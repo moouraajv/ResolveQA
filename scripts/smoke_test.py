@@ -305,7 +305,7 @@ def main() -> None:
     parser.add_argument(
         "--origin-secret",
         default=os.environ.get("RESOLVEQA_ORIGIN_SECRET"),
-        help="Origin secret token to pass in X-ResolveQA-Origin-Verify header",
+        help="Optional origin secret token for direct origin testing. Omit when testing public CloudFront URL (CloudFront injects the header automatically).",
     )
     args = parser.parse_args()
 

@@ -28,8 +28,8 @@ USER resolveqa
 
 EXPOSE 8080
 
-# Health check using python standard library (zero external curl/wget dependencies)
+# Health check using python standard library; passes origin secret header from environment when configured
 HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
-    CMD python -c "import urllib.request, sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8080/health').getcode() == 200 else 1)"
+    CMD python -c "import os, sys, urllib.request; req = urllib.request.Request('http://localhost:8080/health'); secret = os.environ.get('RESOLVEQA_ORIGIN_SECRET'); (req.add_header('X-ResolveQA-Origin-Verify', secret.strip()) if secret and secret.strip() else None); sys.exit(0 if urllib.request.urlopen(req).getcode() == 200 else 1)"
 
 ENTRYPOINT ["python", "scripts/run_server.py"]

@@ -2,8 +2,13 @@
 
 from __future__ import annotations
 
+import os
+import re
+import stat
 import subprocess
 import sys
+import tarfile
+import tempfile
 import threading
 import time
 import unittest
@@ -40,7 +45,7 @@ class BackendPackagingValidationTest(unittest.TestCase):
         self.assertIn("PYTHONUNBUFFERED=1", content)
         self.assertIn("PYTHONPATH=/app/src", content)
         self.assertIn("HEALTHCHECK", content)
-        self.assertIn("urllib.request", content)
+        self.assertIn("RESOLVEQA_ORIGIN_SECRET", content, "Healthcheck must handle origin secret")
         self.assertIn("/health", content)
         self.assertIn('ENTRYPOINT ["python", "scripts/run_server.py"]', content)
 
@@ -61,9 +66,10 @@ class BackendPackagingValidationTest(unittest.TestCase):
 
         self.assertIn("AWSTemplateFormatVersion: '2010-09-09'", content)
 
-        # Origin secret must NOT have a default value
+        # Origin secret validation: NoEcho, AllowedPattern, no hardcoded default
         self.assertIn("OriginSecretHeader:", content)
         self.assertIn("NoEcho: true", content)
+        self.assertIn("AllowedPattern: ^[a-fA-F0-9]{32,128}$", content)
         self.assertNotIn(
             "Default: ResolveQA-Origin-Verify-Secret-Token-2026",
             content,
@@ -95,6 +101,11 @@ class BackendPackagingValidationTest(unittest.TestCase):
         self.assertIn("cfn-signal", content)
         self.assertIn("sha256sum -c", content)
 
+        # Token must NOT be passed in ExecStart command line (use EnvironmentFile)
+        self.assertIn("EnvironmentFile=/etc/resolveqa/backend.env", content)
+        self.assertNotIn("ExecStart=/usr/bin/python3.11 scripts/run_server.py --host 0.0.0.0 --port 8080 --origin-secret", content)
+        self.assertIn("chmod 600 /etc/resolveqa/backend.env", content)
+
         # CloudFront HTTPS enforcement and CacheDisabled policy
         self.assertIn("ViewerProtocolPolicy: redirect-to-https", content)
         self.assertIn("4135ea2d-6df8-44a3-9df3-44184ec0b026", content)
@@ -112,7 +123,7 @@ class BackendPackagingValidationTest(unittest.TestCase):
 
 
 class LocalServerRuntimeAndOriginSecurityTest(unittest.TestCase):
-    """Spawns an ephemeral server locally and tests origin security and smoke tests."""
+    """Spawns an ephemeral server locally and tests origin security, smoke tests, and Docker healthcheck."""
 
     def test_origin_security_enforcement(self) -> None:
         import run_server
@@ -162,18 +173,105 @@ class LocalServerRuntimeAndOriginSecurityTest(unittest.TestCase):
             server.server_close()
             thread.join(timeout=5)
 
-    def test_package_bundle_generation_and_integrity(self) -> None:
+    def test_dockerfile_healthcheck_logic(self) -> None:
+        import run_server
+
+        secret = "docker-healthcheck-token-1234567890"
+        server = run_server._create_server("127.0.0.1", 0, origin_secret=secret)
+        host, port = server.server_address
+
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+
+        try:
+            time.sleep(0.1)
+            # Command from Dockerfile HEALTHCHECK
+            cmd = (
+                f"import os, sys, urllib.request; "
+                f"req = urllib.request.Request('http://{host}:{port}/health'); "
+                f"secret = os.environ.get('RESOLVEQA_ORIGIN_SECRET'); "
+                f"(req.add_header('X-ResolveQA-Origin-Verify', secret.strip()) if secret and secret.strip() else None); "
+                f"sys.exit(0 if urllib.request.urlopen(req).getcode() == 200 else 1)"
+            )
+
+            # 1. With correct RESOLVEQA_ORIGIN_SECRET env var -> exit code 0
+            env_with_secret = os.environ.copy()
+            env_with_secret["RESOLVEQA_ORIGIN_SECRET"] = secret
+            proc_ok = subprocess.run([sys.executable, "-c", cmd], env=env_with_secret)
+            self.assertEqual(proc_ok.returncode, 0, "Healthcheck must succeed when origin secret env is configured")
+
+            # 2. Without env var -> fails with HTTP 403 (unhealthy when server expects token)
+            env_empty = os.environ.copy()
+            env_empty.pop("RESOLVEQA_ORIGIN_SECRET", None)
+            proc_fail = subprocess.run([sys.executable, "-c", cmd], env=env_empty)
+            self.assertNotEqual(proc_fail.returncode, 0, "Healthcheck must fail when server requires token but none provided")
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
+
+    def test_reproducible_package_bundle_determinism(self) -> None:
         import package_bundle
 
-        target, digest, size_bytes = package_bundle.build_bundle()
-        self.assertTrue(target.is_file(), "Bundle file must exist")
-        self.assertGreater(size_bytes, 1000, "Bundle must contain files")
-        self.assertEqual(len(digest), 64, "SHA-256 digest must be 64 hex characters")
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp = Path(tmp_dir)
+            p1 = tmp / "bundle1.tar.gz"
+            p2 = tmp / "bundle2.tar.gz"
 
-        # Re-verify checksum directly
-        import hashlib
-        h = hashlib.sha256(target.read_bytes()).hexdigest()
-        self.assertEqual(digest, h)
+            _, d1, s1 = package_bundle.build_bundle(p1, reject_dirty=False)
+            time.sleep(1.1)
+            _, d2, s2 = package_bundle.build_bundle(p2, reject_dirty=False)
+
+            self.assertEqual(d1, d2, "Hashes of bundles built at different times must be bit-for-bit identical")
+            self.assertEqual(s1, s2, "File sizes must be identical")
+            self.assertEqual(p1.read_bytes(), p2.read_bytes(), "Bundle bytes must be identical")
+
+            # Inspect manifest inside archive
+            with tarfile.open(p1, "r:gz") as tar:
+                names = tar.getnames()
+                self.assertIn("resolveqa-manifest.json", names)
+                manifest_file = tar.extractfile("resolveqa-manifest.json")
+                self.assertIsNotNone(manifest_file)
+                import json
+                manifest_data = json.loads(manifest_file.read().decode("utf-8"))
+                self.assertIn("commit_sha", manifest_data)
+                self.assertIn("components", manifest_data)
+
+    def test_deploy_dry_run_parameters_and_redaction(self) -> None:
+        # Run deploy_dry_run.sh and verify it exits 0 without printing secrets
+        proc = subprocess.run(
+            ["bash", str(DEPLOY_DRY_RUN_SCRIPT), "test-bucket", "test-stack"],
+            cwd=REPO_ROOT,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(proc.returncode, 0, f"deploy_dry_run.sh failed: {proc.stderr}")
+
+        # Check dist/parameters-demo.json exists and has 0600 permissions
+        params_file = REPO_ROOT / "dist" / "parameters-demo.json"
+        self.assertTrue(params_file.is_file(), "parameters-demo.json must be generated")
+        file_mode = stat.S_IMODE(params_file.stat().st_mode)
+        self.assertEqual(file_mode, 0o600, "parameters-demo.json must have chmod 600 permissions")
+
+        # Verify stdout does NOT print the parameter value literally
+        import json
+        params_data = json.loads(params_file.read_text(encoding="utf-8"))
+        origin_secret = next(
+            p["ParameterValue"] for p in params_data if p["ParameterKey"] == "OriginSecretHeader"
+        )
+        self.assertTrue(len(origin_secret) >= 32, "Secret must be at least 32 chars")
+        # Ensure the secret does not appear on stdout
+        self.assertNotIn(
+            origin_secret,
+            proc.stdout,
+            "Origin secret token must be redacted and never printed to stdout",
+        )
+
+        # Cleanup test params and dist
+        import shutil
+        dist_dir = REPO_ROOT / "dist"
+        if dist_dir.exists():
+            shutil.rmtree(dist_dir)
 
 
 if __name__ == "__main__":

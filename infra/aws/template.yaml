@@ -50,7 +50,10 @@ Parameters:
   OriginSecretHeader:
     Type: String
     NoEcho: true
-    MinLength: 16
+    MinLength: 32
+    MaxLength: 128
+    AllowedPattern: ^[a-fA-F0-9]{32,128}$
+    ConstraintDescription: OriginSecretHeader must be a hexadecimal string between 32 and 128 characters.
     Description: Secret token injected by CloudFront (X-ResolveQA-Origin-Verify) and validated by backend handler
 
   CloudFrontPrefixListId:
@@ -184,7 +187,20 @@ Resources:
             useradd -r -s /sbin/nologin resolveqa || true
             chown -R resolveqa:resolveqa /opt/resolveqa
 
-            # Create systemd unit running scripts/run_server.py with origin secret enforcement
+            # Create root-owned private environment file (mode 600) to keep secret token off process args
+            mkdir -p /etc/resolveqa
+            cat << EOF > /etc/resolveqa/backend.env
+            RESOLVEQA_HOST=0.0.0.0
+            RESOLVEQA_PORT=8080
+            RESOLVEQA_ORIGIN_SECRET=${OriginSecretHeader}
+            PYTHONDONTWRITEBYTECODE=1
+            PYTHONUNBUFFERED=1
+            PYTHONPATH=/opt/resolveqa/src
+            EOF
+            chmod 600 /etc/resolveqa/backend.env
+            chown root:root /etc/resolveqa/backend.env
+
+            # Create systemd unit referencing EnvironmentFile without token in ExecStart args
             cat << 'EOF' > /etc/systemd/system/resolveqa-backend.service
             [Unit]
             Description=ResolveQA Ephemeral Demo Backend Service
@@ -196,13 +212,8 @@ Resources:
             User=resolveqa
             Group=resolveqa
             WorkingDirectory=/opt/resolveqa
-            Environment=PYTHONPATH=/opt/resolveqa/src
-            Environment=RESOLVEQA_HOST=0.0.0.0
-            Environment=RESOLVEQA_PORT=8080
-            Environment=RESOLVEQA_ORIGIN_SECRET=${OriginSecretHeader}
-            Environment=PYTHONDONTWRITEBYTECODE=1
-            Environment=PYTHONUNBUFFERED=1
-            ExecStart=/usr/bin/python3.11 scripts/run_server.py --host 0.0.0.0 --port 8080 --origin-secret ${OriginSecretHeader}
+            EnvironmentFile=/etc/resolveqa/backend.env
+            ExecStart=/usr/bin/python3.11 scripts/run_server.py --host 0.0.0.0 --port 8080
             Restart=on-failure
             RestartSec=5
             LimitNOFILE=65536
