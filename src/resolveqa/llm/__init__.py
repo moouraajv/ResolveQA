@@ -11,6 +11,7 @@ from .adapter import (
     build_delimited_messages,
     delimit_untrusted_data,
     load_max_llm_calls,
+    record_llm_calls_in_state,
     validate_llm_output,
 )
 
@@ -25,5 +26,6 @@ __all__ = [
     "build_delimited_messages",
     "delimit_untrusted_data",
     "load_max_llm_calls",
+    "record_llm_calls_in_state",
     "validate_llm_output",
 ]

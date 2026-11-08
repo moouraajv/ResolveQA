@@ -23,6 +23,7 @@ from resolveqa.llm import (
     build_delimited_messages,
     delimit_untrusted_data,
     load_max_llm_calls,
+    record_llm_calls_in_state,
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -85,6 +86,34 @@ class TestLLMAdapter(unittest.TestCase):
 
         self.assertEqual(case.attempts.llm_calls, 0)
         self.assertEqual(llm.get_llm_calls(case), 12)
+
+    def test_explicit_call_count_for_orchestrator_and_new_instance_respects_limit(self) -> None:
+        """Q2 regression: result exposes calls_consumed/llm_calls for the orchestrator, and a new LLMAdapter instance seeded from RunState.attempts.llm_calls rejects the 13th call."""
+        initial_case = _make_case()
+        state = initial_case
+        msgs = build_delimited_messages(
+            system_instruction="Triage",
+            untrusted_blocks={"report_text": state.report_text},
+        )
+
+        # Simulate orchestrator recording result.llm_calls into RunState across multiple adapter instances
+        for expected_count in range(1, 13):
+            adapter_instance = LLMAdapter(case=state)
+            res = adapter_instance.complete("triage", msgs)
+            self.assertEqual(getattr(res, "calls_consumed", None), 1)
+            self.assertEqual(getattr(res, "llm_calls", None), expected_count)
+            # Adapter never mutates the input state in place
+            self.assertEqual(state.attempts.llm_calls, expected_count - 1)
+            self.assertEqual(initial_case.attempts.llm_calls, 0)
+            # Orchestrator records the updated count in a new RunState
+            state = adapter_instance.record_calls_in_state(state, res)
+            self.assertEqual(state.attempts.llm_calls, expected_count)
+
+        # A brand-new LLMAdapter instance bound to the state with llm_calls=12 must reject the 13th call
+        fresh_adapter = LLMAdapter(case=state)
+        self.assertEqual(fresh_adapter.get_llm_calls(state), 12)
+        with self.assertRaises(LLMLimitExceededError):
+            fresh_adapter.complete("triage", msgs)
 
     def test_schema_validation_raises_typed_llm_output_error_on_malformed_or_invalid_outputs(self) -> None:
         msgs = build_delimited_messages(

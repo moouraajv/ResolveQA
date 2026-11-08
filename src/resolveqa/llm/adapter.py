@@ -353,8 +353,48 @@ def _require_delimited_untrusted_messages(
         )
 
 
+def record_llm_calls_in_state(case: RunState, llm_calls: int) -> RunState:
+    """Return a new `RunState` with `attempts.llm_calls` updated, without mutating `case` in place.
+
+    Per RFC-0001 §3.3, the Orchestrator owns state transitions and must persist the cumulative
+    `result.llm_calls` into `RunState.attempts.llm_calls` so subsequent adapter instances
+    seeded from `RunState` enforce the per-case `max_llm_calls` budget.
+    """
+    new_attempts = Attempts(fix=int(case.attempts.fix), llm_calls=int(llm_calls))
+    ev_collection: Any = (
+        tuple(case.evidence_ids) if isinstance(case.evidence_ids, tuple) else list(case.evidence_ids)
+    )
+    return RunState(
+        case_id=case.case_id,
+        client_id=case.client_id,
+        repo_ref=case.repo_ref,
+        channel=case.channel,
+        report_text=case.report_text,
+        state=case.state,
+        created_at=case.created_at,
+        updated_at=case.updated_at,
+        terminal_reason=case.terminal_reason,
+        attempts=new_attempts,
+        base_revision=case.base_revision,
+        fix_revision=case.fix_revision,
+        evidence_ids=ev_collection,
+    )
+
+
 class DeterministicMockLLM:
-    """Deterministic LLM adapter for testing, offline execution, and replay (RFC-0001 §3.3, D3)."""
+    """Deterministic LLM adapter for testing, offline execution, and replay (RFC-0001 §3.3, D3).
+
+    Budget & Immutability Contract (RFC-0001 §3.3, §5):
+    - `LLMAdapter` never mutates the received `RunState` or `Attempts` in place.
+    - Every `complete()` invocation exposes `result.calls_consumed` (`1`) and `result.llm_calls`
+      (cumulative calls for the case) on the returned `LLMResult`.
+    - The **Orchestrator** is the owner of the per-case limit across instances and must record
+      `result.llm_calls` into `RunState.attempts.llm_calls` (e.g. via `record_llm_calls_in_state`
+      or `adapter.record_calls_in_state(case, result)`).
+    - When a new `LLMAdapter` instance is bound to a `RunState` (`LLMAdapter(case=...)`,
+      `bind_case(case)`, or `complete(..., case=case)`), it seeds its counter from
+      `case.attempts.llm_calls` so the 12-call limit is enforced across instances.
+    """
 
     def __init__(
         self,
@@ -363,10 +403,11 @@ class DeterministicMockLLM:
         provider: str = "mock",
         model: str = "deterministic-mock-v1",
         response_override: Optional[str | Callable[[str, list[dict[str, str]], Optional[dict[str, Any]]], str]] = None,
+        initial_llm_calls: Optional[int] = None,
     ) -> None:
         self._case: Optional[RunState] = None
         self._calls_by_case: dict[str, int] = {}
-        self._standalone_calls: int = 0
+        self._standalone_calls: int = int(initial_llm_calls) if initial_llm_calls is not None else 0
         self.max_llm_calls = (
             int(max_llm_calls) if max_llm_calls is not None else load_max_llm_calls()
         )
@@ -375,13 +416,21 @@ class DeterministicMockLLM:
         self.response_override = response_override
         self.audit_log: list[dict[str, Any]] = []
         if case is not None:
-            self.bind_case(case)
+            self.bind_case(case, initial_llm_calls=initial_llm_calls)
 
-    def bind_case(self, case: RunState) -> None:
-        """Bind a `RunState` reference without mutating it."""
+    def bind_case(self, case: RunState, initial_llm_calls: Optional[int] = None) -> None:
+        """Bind a `RunState` reference without mutating it, seeding call count from `case.attempts.llm_calls`."""
         self._case = case
         prev = self._calls_by_case.get(case.case_id, 0)
-        self._calls_by_case[case.case_id] = max(prev, int(case.attempts.llm_calls))
+        seeded = max(prev, int(case.attempts.llm_calls))
+        if initial_llm_calls is not None:
+            seeded = max(seeded, int(initial_llm_calls))
+        self._calls_by_case[case.case_id] = seeded
+
+    def record_calls_in_state(self, case: RunState, result: Optional[LLMResult] = None) -> RunState:
+        """Return a new `RunState` recording the updated `llm_calls` count for the orchestrator."""
+        count = int(getattr(result, "llm_calls", self.get_llm_calls(case)))
+        return record_llm_calls_in_state(case, count)
 
     def get_llm_calls(self, case: Optional[RunState | str] = None) -> int:
         """Return the total LLM calls consumed for the given case (or bound/standalone context)."""
@@ -412,7 +461,12 @@ class DeterministicMockLLM:
         *,
         case: Optional[RunState] = None,
     ) -> LLMResult:
-        """Deterministically produce an `LLMResult` while enforcing `max_llm_calls`, schema validation, and secret scrubbing."""
+        """Deterministically produce an `LLMResult` while enforcing `max_llm_calls`, schema validation, and secret scrubbing.
+
+        Returns an `LLMResult` with `result.calls_consumed == 1` and `result.llm_calls` set to the
+        new cumulative call count for the bound `RunState`. Because `RunState` is immutable, the
+        orchestrator is responsible for persisting `result.llm_calls` into `RunState.attempts.llm_calls`.
+        """
         active_case = case if case is not None else self._case
         if active_case is not None:
             current_calls = max(
