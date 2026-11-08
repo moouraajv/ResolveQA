@@ -19,7 +19,15 @@ from resolveqa.store import EventStore
 
 from .customer import QUESTION, _evidence, _read_json, _verified_facts
 from .runner import ROOT, MissingComponents, load_components, run_demo
-from .validate_pending import PENDING, load_pending_components
+from .llm import create_demo_llm
+
+# Pending PR snapshots moved to scripts/dev_validate_pending.py (#65).
+# On main all public stages are available; keep empty PENDING for replay metadata.
+PENDING = ()
+
+def load_pending_components(root, *, only_missing=True):
+    """Compatibility no-op: stages must already be merged on main."""
+    raise ModuleNotFoundError('pending snapshots moved to scripts/dev_validate_pending.py')
 
 DEFAULT_REPLAY = Path(__file__).resolve().parent / 'replay'
 SCENARIOS = ('coupon', 'vague')
@@ -199,13 +207,12 @@ def main(argv=None):
                 raise ValueError('Destino da gravação já existe; escolha uma pasta nova')
             llm_factory = None
             if args.real_llm:
-                from .real_llm import RealLLM
-                model = args.model or os.environ.get('FEATHERLESS_MODEL')
-                RealLLM(model)  # Validate opt-in credentials before loading stages.
-                llm_factory = lambda: RealLLM(model)
+                create_demo_llm(real=True)  # Validate opt-in credentials before loading stages.
+                llm_factory = lambda: create_demo_llm(real=True)
             try:
                 load_components()
             except MissingComponents:
+                # Dev-only fallback lives outside src/; presentation path requires merged APIs.
                 load_pending_components(ROOT, only_missing=True)
                 load_components()
             pending = _pending_sources()
