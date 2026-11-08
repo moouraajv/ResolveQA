@@ -69,9 +69,9 @@ def get_git_info(repo_root: Path) -> dict[str, Any]:
             dirty_lines.append(raw_line)
         is_dirty = bool(dirty_lines)
     except Exception:
-        pass
+        is_dirty = True
 
-    return {"commit_sha": commit_sha, "dirty": is_dirty}
+    return {"commit_sha": commit_sha, "dirty": is_dirty or commit_sha == "unknown"}
 
 
 def build_bundle(
