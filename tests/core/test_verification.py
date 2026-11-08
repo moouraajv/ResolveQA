@@ -1,0 +1,478 @@
+"""Tests for independent Verification stage and protected test oracle (Issue #12, RF-06, RFC-0001 §3.3)."""
+
+from __future__ import annotations
+
+import hashlib
+import tempfile
+import unittest
+from pathlib import Path
+from unittest.mock import patch as mock_patch
+
+from resolveqa.contracts import (
+    CaseState,
+    ChannelType,
+    ExecResult,
+    Patch,
+    ReproOutcome,
+    ReproResult,
+    RunState,
+    SandboxStage,
+    VerdictResult,
+    VerificationStage,
+)
+from resolveqa.sandbox import LocalSandbox
+from resolveqa.verification import Verification, Verifier
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+DEMO_TARGET_DIR = REPO_ROOT / "demo-target"
+
+COUPON_REPRO_TEST = """\
+import unittest
+from checkout import calculate_total, format_brl
+
+
+class TestCouponDiscountRepro(unittest.TestCase):
+    def test_apply_10_percent_coupon_on_200_brl(self) -> None:
+        total = calculate_total(200.0, coupon_percent=10.0)
+        self.assertEqual(total, 180.0)
+        self.assertEqual(format_brl(total), "R$ 180,00")
+
+
+if __name__ == "__main__":
+    unittest.main()
+"""
+
+VALID_CHECKOUT_PATCH_DIFF = """\
+--- a/checkout.py
++++ b/checkout.py
+@@ -32,5 +32,5 @@
+         raise ValueError("coupon_percent must be between 0 and 100")
+ 
+     discount = round(float(subtotal) * (pct / 100.0), 2)
+-    return round(float(subtotal), 2)
++    return round(float(subtotal) - discount, 2)
+"""
+
+WRONG_FIX_PATCH_DIFF = """\
+--- a/checkout.py
++++ b/checkout.py
+@@ -32,5 +32,5 @@
+         raise ValueError("coupon_percent must be between 0 and 100")
+ 
+     discount = round(float(subtotal) * (pct / 100.0), 2)
+-    return round(float(subtotal), 2)
++    return round(float(subtotal) - (discount * 2.0), 2)
+"""
+
+SUITE_BREAKING_PATCH_DIFF = """\
+--- a/checkout.py
++++ b/checkout.py
+@@ -22,8 +22,6 @@
+     coupon_code: str | None = None,
+ ) -> float:
+     \"\"\"Calculate final checkout total given subtotal and optional coupon discount.\"\"\"
+-    if subtotal < 0:
+-        raise ValueError("subtotal must be non-negative")
+ 
+     pct = float(coupon_percent)
+     if coupon_code is not None and pct == 0.0:
+@@ -32,5 +30,5 @@
+         raise ValueError("coupon_percent must be between 0 and 100")
+ 
+     discount = round(float(subtotal) * (pct / 100.0), 2)
+-    return round(float(subtotal), 2)
++    return round(float(subtotal) - discount, 2)
+"""
+
+
+def _make_case(
+    repo_ref: str = "demo-target",
+    base_revision: str | None = "base-rev-001",
+    fix_revision: str | None = None,
+) -> RunState:
+    return RunState(
+        case_id="case-verify-001",
+        client_id="client-demo",
+        repo_ref=repo_ref,
+        channel=ChannelType.SIMULATED_CHAT,
+        report_text="Apliquei um cupom de 10% em uma compra de R$ 200, mas o total continuou em R$ 200.",
+        state=CaseState.VERIFYING,
+        created_at="2026-11-08T00:00:00Z",
+        updated_at="2026-11-08T00:01:00Z",
+        base_revision=base_revision,
+        fix_revision=fix_revision,
+    )
+
+
+def _make_repro(
+    test_source: str = COUPON_REPRO_TEST,
+    test_path: str = "tests/test_repro_coupon.py",
+    exit_code: int = 1,
+    outcome: ReproOutcome = ReproOutcome.RED_ON_ASSERTION,
+    failing_assertion: str | None = "AssertionError: 200.0 != 180.0",
+) -> ReproResult:
+    return ReproResult(
+        test_path=test_path,
+        test_source_ref=test_source,
+        exit_code=exit_code,
+        outcome=outcome,
+        failing_assertion=failing_assertion,
+        log_ref="AssertionError: 200.0 != 180.0",
+    )
+
+
+class TestVerificationStage(unittest.TestCase):
+    """Validate Issue #12 acceptance criteria and protected oracle invariants."""
+
+    def test_implements_verification_stage_protocol(self) -> None:
+        verifier = Verification(base_root=REPO_ROOT)
+        self.assertIsInstance(verifier, VerificationStage)
+        self.assertIs(Verifier, Verification)
+
+    def test_verified_on_demo_target_with_correct_patch_and_Does_not_mutate_repo(self) -> None:
+        checkout_path = DEMO_TARGET_DIR / "checkout.py"
+        original_sha = hashlib.sha256(checkout_path.read_bytes()).hexdigest()
+
+        verifier = Verification(base_root=REPO_ROOT)
+        case = _make_case()
+        repro = _make_repro()
+        patch = Patch(
+            diff_ref=VALID_CHECKOUT_PATCH_DIFF,
+            files_changed=("checkout.py",),
+            touches_tests=False,
+            touches_ci=False,
+        )
+
+        # Ensure LLM is never imported or called by Verification
+        with mock_patch("resolveqa.llm.adapter.LLMAdapter.complete", side_effect=AssertionError("LLM must not be called")):
+            verdict = verifier.run(case, repro, patch)
+
+        self.assertEqual(verdict.result, VerdictResult.VERIFIED, f"Reasons: {verdict.reasons}")
+        self.assertEqual(verdict.reasons, ())
+        self.assertNotEqual(verdict.before.exit_code, 0)
+        self.assertIn("AssertionError", verdict.before.log_ref)
+        self.assertEqual(verdict.after.exit_code, 0)
+        self.assertEqual(verdict.suite.exit_code, 0)
+        self.assertEqual(verdict.base_revision, "base-rev-001")
+        self.assertTrue(verdict.fix_revision)
+        self.assertNotEqual(verdict.base_revision, verdict.fix_revision)
+
+        # Original demo-target must remain untouched and clean
+        after_sha = hashlib.sha256(checkout_path.read_bytes()).hexdigest()
+        self.assertEqual(original_sha, after_sha)
+        self.assertFalse((DEMO_TARGET_DIR / "tests" / "test_repro_coupon.py").exists())
+
+    def test_rejects_patch_that_modifies_repro_test_or_weakens_assertion(self) -> None:
+        tampering_diff = (
+            VALID_CHECKOUT_PATCH_DIFF
+            + """\
+--- a/tests/test_repro_coupon.py
++++ b/tests/test_repro_coupon.py
+@@ -6,4 +6,4 @@
+     def test_apply_10_percent_coupon_on_200_brl(self) -> None:
+         total = calculate_total(200.0, coupon_percent=10.0)
+-        self.assertEqual(total, 180.0)
+-        self.assertEqual(format_brl(total), "R$ 180,00")
++        self.assertEqual(total, 200.0)
+"""
+        )
+        verifier = Verification(base_root=REPO_ROOT)
+        # Even if Patch metadata lies (touches_tests=False and omits test from files_changed),
+        # Verification must catch the sha256 mismatch and test tampering.
+        lying_patch = Patch(
+            diff_ref=tampering_diff,
+            files_changed=("checkout.py",),
+            touches_tests=False,
+            touches_ci=False,
+        )
+        verdict = verifier.run(_make_case(), _make_repro(), lying_patch)
+        self.assertEqual(verdict.result, VerdictResult.REJECTED)
+        reasons_text = " ".join(verdict.reasons).lower()
+        self.assertTrue(
+            "test_modified" in reasons_text or "touches_tests" in reasons_text or "assertion" in reasons_text,
+            f"Expected test modification/weakening reason, got: {verdict.reasons}",
+        )
+
+    def test_rejects_patch_that_deletes_repro_test(self) -> None:
+        deleting_diff = """\
+--- a/checkout.py
++++ b/checkout.py
+@@ -32,5 +32,5 @@
+         raise ValueError("coupon_percent must be between 0 and 100")
+ 
+     discount = round(float(subtotal) * (pct / 100.0), 2)
+-    return round(float(subtotal), 2)
++    return round(float(subtotal) - discount, 2)
+--- a/tests/test_repro_coupon.py
++++ /dev/null
+@@ -1,13 +0,0 @@
+-import unittest
+-from checkout import calculate_total, format_brl
+-
+-
+-class TestCouponDiscountRepro(unittest.TestCase):
+-    def test_apply_10_percent_coupon_on_200_brl(self) -> None:
+-        total = calculate_total(200.0, coupon_percent=10.0)
+-        self.assertEqual(total, 180.0)
+-        self.assertEqual(format_brl(total), "R$ 180,00")
+-
+-
+-if __name__ == "__main__":
+-    unittest.main()
+"""
+        verifier = Verification(base_root=REPO_ROOT)
+        patch = Patch(
+            diff_ref=deleting_diff,
+            files_changed=("checkout.py",),
+            touches_tests=False,
+            touches_ci=False,
+        )
+        verdict = verifier.run(_make_case(), _make_repro(), patch)
+        self.assertEqual(verdict.result, VerdictResult.REJECTED)
+        reasons_text = " ".join(verdict.reasons).lower()
+        self.assertIn("test_deleted", reasons_text)
+
+    def test_rejects_patch_or_test_with_skip_or_xfail(self) -> None:
+        skip_diff = """\
+--- a/checkout.py
++++ b/checkout.py
+@@ -32,5 +32,5 @@
+         raise ValueError("coupon_percent must be between 0 and 100")
+ 
+     discount = round(float(subtotal) * (pct / 100.0), 2)
+-    return round(float(subtotal), 2)
++    return round(float(subtotal) - discount, 2)
+--- a/tests/test_repro_coupon.py
++++ b/tests/test_repro_coupon.py
+@@ -5,6 +5,7 @@
+ 
+ class TestCouponDiscountRepro(unittest.TestCase):
++    @unittest.skip("skip failing test")
+     def test_apply_10_percent_coupon_on_200_brl(self) -> None:
+         total = calculate_total(200.0, coupon_percent=10.0)
+         self.assertEqual(total, 180.0)
+"""
+        verifier = Verification(base_root=REPO_ROOT)
+        patch = Patch(
+            diff_ref=skip_diff,
+            files_changed=("checkout.py",),
+            touches_tests=False,
+            touches_ci=False,
+        )
+        verdict = verifier.run(_make_case(), _make_repro(), patch)
+        self.assertEqual(verdict.result, VerdictResult.REJECTED)
+        reasons_text = " ".join(verdict.reasons).lower()
+        self.assertIn("skip", reasons_text)
+
+        # Also test when the reproduction test itself contains xfail or skip
+        xfail_test = """\
+import pytest
+from checkout import calculate_total
+
+@pytest.mark.xfail(reason="known bug")
+def test_coupon():
+    assert calculate_total(200.0, coupon_percent=10.0) == 180.0
+"""
+        verdict_xfail = verifier.run(
+            _make_case(),
+            _make_repro(test_source=xfail_test),
+            Patch(diff_ref=VALID_CHECKOUT_PATCH_DIFF, files_changed=("checkout.py",)),
+        )
+        self.assertEqual(verdict_xfail.result, VerdictResult.REJECTED)
+        self.assertIn("xfail", " ".join(verdict_xfail.reasons).lower())
+
+    def test_rejects_test_with_removed_or_weakened_assertion(self) -> None:
+        no_assert_test = """\
+import unittest
+from checkout import calculate_total
+
+class TestWeak(unittest.TestCase):
+    def test_no_assertion(self) -> None:
+        calculate_total(200.0, coupon_percent=10.0)
+"""
+        tautological_test = """\
+def test_trivial():
+    assert True
+"""
+        verifier = Verification(base_root=REPO_ROOT)
+        good_patch = Patch(diff_ref=VALID_CHECKOUT_PATCH_DIFF, files_changed=("checkout.py",))
+
+        for name, bad_test in [("no_assert", no_assert_test), ("tautological", tautological_test)]:
+            with self.subTest(case=name):
+                verdict = verifier.run(_make_case(), _make_repro(test_source=bad_test), good_patch)
+                self.assertEqual(verdict.result, VerdictResult.REJECTED)
+                self.assertIn("assertion", " ".join(verdict.reasons).lower())
+
+    def test_rejects_patch_touching_ci_or_runner_configuration(self) -> None:
+        verifier = Verification(base_root=REPO_ROOT)
+        # Flagged via touches_ci=True
+        ci_flag_patch = Patch(
+            diff_ref=VALID_CHECKOUT_PATCH_DIFF,
+            files_changed=("checkout.py",),
+            touches_tests=False,
+            touches_ci=True,
+        )
+        v1 = verifier.run(_make_case(), _make_repro(), ci_flag_patch)
+        self.assertEqual(v1.result, VerdictResult.REJECTED)
+
+        # Undeclared runner config change in pyproject.toml
+        runner_cfg_diff = (
+            VALID_CHECKOUT_PATCH_DIFF
+            + """\
+--- a/pyproject.toml
++++ b/pyproject.toml
+@@ -1,4 +1,4 @@
+ [tool.pytest.ini_options]
+ pythonpath = ["."]
+ testpaths = ["tests"]
+-addopts = "-q -p no:cacheprovider"
++addopts = "-q -p no:cacheprovider -k not_coupon"
+"""
+        )
+        runner_patch = Patch(
+            diff_ref=runner_cfg_diff,
+            files_changed=("checkout.py",),
+            touches_tests=False,
+            touches_ci=False,
+        )
+        v2 = verifier.run(_make_case(), _make_repro(), runner_patch)
+        self.assertEqual(v2.result, VerdictResult.REJECTED)
+        self.assertIn("runner_config_modified", " ".join(v2.reasons).lower())
+
+    def test_rejects_patch_exceeding_max_files_changed(self) -> None:
+        verifier = Verification(base_root=REPO_ROOT, max_files_changed=3)
+        patch = Patch(
+            diff_ref=VALID_CHECKOUT_PATCH_DIFF,
+            files_changed=("checkout.py", "a.py", "b.py", "c.py"),
+            touches_tests=False,
+            touches_ci=False,
+        )
+        verdict = verifier.run(_make_case(), _make_repro(), patch)
+        self.assertEqual(verdict.result, VerdictResult.REJECTED)
+        self.assertIn("max_files_changed", " ".join(verdict.reasons).lower())
+
+    def test_rejects_wrong_fix_and_suite_breaking_fix(self) -> None:
+        verifier = Verification(base_root=REPO_ROOT)
+        # Wrong fix: reproduction test still fails after patch
+        wrong_patch = Patch(
+            diff_ref=WRONG_FIX_PATCH_DIFF,
+            files_changed=("checkout.py",),
+        )
+        v_wrong = verifier.run(_make_case(), _make_repro(), wrong_patch)
+        self.assertEqual(v_wrong.result, VerdictResult.REJECTED)
+        self.assertNotEqual(v_wrong.after.exit_code, 0)
+
+        # Suite-breaking fix: reproduction test passes, but existing suite fails
+        breaking_patch = Patch(
+            diff_ref=SUITE_BREAKING_PATCH_DIFF,
+            files_changed=("checkout.py",),
+        )
+        v_suite = verifier.run(_make_case(), _make_repro(), breaking_patch)
+        self.assertEqual(v_suite.result, VerdictResult.REJECTED)
+        self.assertEqual(v_suite.after.exit_code, 0)
+        self.assertNotEqual(v_suite.suite.exit_code, 0)
+
+    def test_import_collection_and_setup_errors_do_not_count_as_valid_red(self) -> None:
+        verifier = Verification(base_root=REPO_ROOT)
+        good_patch = Patch(diff_ref=VALID_CHECKOUT_PATCH_DIFF, files_changed=("checkout.py",))
+
+        import_error_test = """\
+import nonexistent_dependency_xyz
+from checkout import calculate_total
+
+def test_coupon():
+    assert calculate_total(200.0, coupon_percent=10.0) == 180.0
+"""
+        syntax_error_test = """\
+def test_broken(
+    assert 1 == 2
+"""
+        setup_error_test = """\
+import unittest
+from checkout import calculate_total
+
+class TestSetupError(unittest.TestCase):
+    def setUp(self) -> None:
+        raise RuntimeError("preparation failed before assertion")
+
+    def test_coupon(self) -> None:
+        self.assertEqual(calculate_total(200.0, coupon_percent=10.0), 180.0)
+"""
+        non_assertion_error_test = """\
+from checkout import calculate_total
+
+def test_coupon():
+    raise ValueError("unexpected crash instead of AssertionError")
+    assert calculate_total(200.0, coupon_percent=10.0) == 180.0
+"""
+
+        for label, bad_source in [
+            ("import_error", import_error_test),
+            ("syntax_error", syntax_error_test),
+            ("setup_error", setup_error_test),
+            ("non_assertion_error", non_assertion_error_test),
+        ]:
+            with self.subTest(error_kind=label):
+                verdict = verifier.run(
+                    _make_case(),
+                    _make_repro(test_source=bad_source),
+                    good_patch,
+                )
+                self.assertNotEqual(
+                    verdict.result,
+                    VerdictResult.VERIFIED,
+                    f"{label} must never count as valid RED / VERIFIED",
+                )
+                self.assertIn(
+                    verdict.result,
+                    (VerdictResult.REJECTED, VerdictResult.ENV_ERROR),
+                )
+                self.assertTrue(len(verdict.reasons) > 0)
+
+    def test_env_error_cases_with_fixture_patches(self) -> None:
+        # 1. Timeout induced by fixture patch inside sandbox -> ENV_ERROR
+        timeout_patch_diff = """\
+--- a/checkout.py
++++ b/checkout.py
+@@ -1,4 +1,5 @@
+ \"\"\"Checkout pricing module for order totals and promotional coupons.\"\"\"
+ 
+ from __future__ import annotations
++import time
+ 
+@@ -32,5 +33,6 @@
+         raise ValueError("coupon_percent must be between 0 and 100")
+ 
++    time.sleep(5.0)
+     discount = round(float(subtotal) * (pct / 100.0), 2)
+-    return round(float(subtotal), 2)
++    return round(float(subtotal) - discount, 2)
+"""
+        verifier = Verification(base_root=REPO_ROOT, test_timeout_s=0.3)
+        timeout_patch = Patch(
+            diff_ref=timeout_patch_diff,
+            files_changed=("checkout.py",),
+        )
+        v_timeout = verifier.run(_make_case(), _make_repro(), timeout_patch)
+        self.assertEqual(v_timeout.result, VerdictResult.ENV_ERROR)
+        self.assertTrue(any("infra_error" in r.lower() or "timeout" in r.lower() for r in v_timeout.reasons))
+
+        # 2. Non-existent target repository -> ENV_ERROR
+        v_missing_repo = verifier.run(
+            _make_case(repo_ref="nonexistent-repo-fixture"),
+            _make_repro(),
+            Patch(diff_ref=VALID_CHECKOUT_PATCH_DIFF, files_changed=("checkout.py",)),
+        )
+        self.assertEqual(v_missing_repo.result, VerdictResult.ENV_ERROR)
+
+        # 3. Reproduction stage outcome already ENV_ERROR -> ENV_ERROR
+        v_repro_env = verifier.run(
+            _make_case(),
+            _make_repro(outcome=ReproOutcome.ENV_ERROR, exit_code=2),
+            Patch(diff_ref=VALID_CHECKOUT_PATCH_DIFF, files_changed=("checkout.py",)),
+        )
+        self.assertEqual(v_repro_env.result, VerdictResult.ENV_ERROR)
+
+
+if __name__ == "__main__":
+    unittest.main()
