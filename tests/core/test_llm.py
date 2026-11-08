@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import signal
 import subprocess
 import sys
 import tempfile
@@ -23,6 +24,7 @@ from resolveqa.contracts import (
 import http.server
 import socket
 import threading
+import urllib.request
 from resolveqa.llm import (
     ALLOWED_FEATHERLESS_HOST,
     default_featherless_transport,
@@ -682,8 +684,9 @@ class TestLLMAdapter(unittest.TestCase):
                     raise sys_exc
 
                 llm = LLMAdapter(case=case, use_real=True, env_file_path=env_path, transport=raising_sys_transport)
-                with self.assertRaises(type(sys_exc)):
+                with self.assertRaises(type(sys_exc)) as caught:
                     llm.complete("triage", msgs)
+                self.assertIs(caught.exception, sys_exc)
                 self.assertEqual(calls, 1)
 
     def test_default_featherless_transport_with_local_server_and_urllib_errors(self) -> None:
@@ -811,6 +814,118 @@ class TestLLMAdapter(unittest.TestCase):
                     visited_frames += 1
                     tb = tb.tb_next
                 self.assertGreaterEqual(visited_frames, 2)
+
+    def test_sigalrm_interrupt_scrubs_real_transport_traceback_and_request_headers(self) -> None:
+        """46-A5: interrupt a real localhost POST, then inspect every exception frame."""
+        received = threading.Event()
+        release = threading.Event()
+        requests: list[urllib.request.Request] = []
+
+        class _RecordingRequest(urllib.request.Request):
+            def __init__(self, *args: Any, **kwargs: Any) -> None:
+                super().__init__(*args, **kwargs)
+                # Exercise both independent header dictionaries held by urllib.
+                self.add_unredirected_header("Authorization", self.get_header("Authorization"))
+                requests.append(self)
+
+        class _SlowHandler(http.server.BaseHTTPRequestHandler):
+            def do_POST(self) -> None:
+                self.rfile.read(int(self.headers.get("Content-Length", "0")))
+                received.set()
+                # Arm only after the POST arrives, while the caller waits for a response.
+                signal.setitimer(signal.ITIMER_REAL, 0.05)
+                release.wait(5.0)
+                self.close_connection = True
+
+            def log_message(self, format: str, *args: Any) -> None:
+                pass
+
+        def interrupt(signum: int, frame: Any) -> None:
+            raise KeyboardInterrupt("local test interruption")
+
+        def assert_clean_exception_graph(error: BaseException, needle: str) -> None:
+            pending = [error]
+            seen_errors: set[int] = set()
+            frame_count = 0
+
+            def inspect_value(value: Any, seen: set[int]) -> bool:
+                if id(value) in seen:
+                    return False
+                seen.add(id(value))
+                if isinstance(value, str):
+                    return needle in value
+                if isinstance(value, bytes):
+                    return needle.encode() in value
+                if isinstance(value, dict):
+                    return any(inspect_value(k, seen) or inspect_value(v, seen)
+                               for k, v in list(value.items()))
+                if isinstance(value, (list, tuple, set, frozenset)):
+                    return any(inspect_value(v, seen) for v in value)
+                if isinstance(value, urllib.request.Request):
+                    return inspect_value(vars(value), seen)
+                return needle in repr(value)
+
+            while pending:
+                current = pending.pop()
+                if id(current) in seen_errors:
+                    continue
+                seen_errors.add(id(current))
+                for linked in (current.__cause__, current.__context__):
+                    if linked is not None:
+                        pending.append(linked)
+                tb = current.__traceback__
+                while tb is not None:
+                    frame_count += 1
+                    for name, value in list(tb.tb_frame.f_locals.items()):
+                        self.assertFalse(
+                            inspect_value(value, set()),
+                            f"Credential retained in {tb.tb_frame.f_code.co_name}.{name}",
+                        )
+                    tb = tb.tb_next
+            self.assertGreaterEqual(frame_count, 3)
+
+        server = http.server.HTTPServer(("127.0.0.1", 0), _SlowHandler)
+        worker = threading.Thread(target=server.serve_forever, daemon=True)
+        worker.start()
+        local_url = f"http://127.0.0.1:{server.server_port}/v1/chat/completions"
+        previous_handler = signal.getsignal(signal.SIGALRM)
+        previous_timer = signal.getitimer(signal.ITIMER_REAL)
+
+        def local_transport(url: str, headers: dict[str, str], body: bytes, timeout_s: float) -> dict[str, Any]:
+            return default_featherless_transport(local_url, headers, body, timeout_s)
+
+        try:
+            signal.signal(signal.SIGALRM, interrupt)
+            with tempfile.TemporaryDirectory() as tmpdir:
+                env_path = _write_temp_env_file(
+                    tmpdir, key_value="".join(["rc_local_interrupt_", "synthetic_46_a5_778899"])
+                )
+                self.assertEqual(env_path.stat().st_mode & 0o777, 0o600)
+                case = _make_case()
+                llm = LLMAdapter(case=case, use_real=True, env_file_path=env_path,
+                                 transport=local_transport, timeout_s=3.0)
+                try:
+                    with patch.dict(os.environ, {"NO_PROXY": "127.0.0.1", "no_proxy": "127.0.0.1"}), \
+                            patch("resolveqa.llm.adapter.urllib.request.Request", _RecordingRequest):
+                        llm.complete("triage", build_delimited_messages(
+                            "Triage", {"report_text": case.report_text}))
+                except KeyboardInterrupt as err:
+                    self.assertTrue(received.is_set())
+                    assert_clean_exception_graph(
+                        err, "".join(["rc_local_interrupt_", "synthetic_46_a5_778899"]))
+                else:
+                    self.fail("SIGALRM must interrupt the real HTTP call with KeyboardInterrupt")
+                self.assertEqual(len(requests), 1, "An interrupt must not retry or fall back")
+                self.assertEqual(requests[0].headers, {})
+                self.assertEqual(requests[0].unredirected_hdrs, {})
+        finally:
+            signal.setitimer(signal.ITIMER_REAL, 0)
+            signal.signal(signal.SIGALRM, previous_handler)
+            signal.setitimer(signal.ITIMER_REAL, *previous_timer)
+            release.set()
+            server.shutdown()
+            server.server_close()
+            worker.join(timeout=5.0)
 
     def test_mock_fix_patch_applies_cleanly_to_current_demo_target(self) -> None:
         llm = LLMAdapter(case=_make_case())

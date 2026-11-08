@@ -527,8 +527,8 @@ def default_featherless_transport(
 ) -> dict[str, Any]:
     """Perform an OpenAI-compatible POST request using `urllib.request` with redirects disabled."""
     req = urllib.request.Request(url=url, data=body, headers=dict(headers), method="POST")
-    opener = urllib.request.build_opener(_NoRedirectHandler())
     try:
+        opener = urllib.request.build_opener(_NoRedirectHandler())
         with opener.open(req, timeout=timeout_s) as resp:
             status = getattr(resp, "status", getattr(resp, "code", 200))
             if 300 <= int(status) < 400:
@@ -556,6 +556,10 @@ def default_featherless_transport(
         if isinstance(exc, (TimeoutError, socket.timeout)):
             raise TimeoutError(redact_secrets(f"Featherless request timed out: {exc}")) from None
         raise ConnectionError(redact_secrets(f"Featherless network error: {exc}")) from None
+    finally:
+        # Request owns header copies independent of the caller's dictionary.
+        req.headers.clear()
+        req.unredirected_hdrs.clear()
 
 
 def _has_valid_featherless_key(env_file_path: Path | str | None, env_key_name: str) -> bool:
@@ -575,7 +579,7 @@ def _invoke_transport_ephemeral_auth(
     body_bytes: bytes,
     timeout_s: float,
 ) -> dict[str, Any]:
-    """Mount Authorization header in a short helper and scrub locals before propagating any Exception."""
+    """Mount Authorization header in a short helper and scrub locals before propagating any BaseException."""
     secret_val = load_featherless_api_key(env_file_path, env_key_name=env_key_name, strict_permissions=False)
     if not secret_val:
         raise LLMProviderError("Featherless API key unavailable at runtime")
@@ -597,6 +601,11 @@ def _invoke_transport_ephemeral_auth(
         if isinstance(exc, ConnectionError):
             raise ConnectionError(redact_secrets(str(exc))) from None
         raise LLMProviderError(redact_secrets(str(exc))) from None
+    except BaseException as exc:
+        headers.clear()
+        del headers
+        # Preserve Ctrl+C/SystemExit while dropping credential-bearing network frames.
+        raise exc.with_traceback(None)
     finally:
         if "headers" in locals():
             headers.clear()
