@@ -31,7 +31,9 @@ from resolveqa.contracts import (
     VerdictResult,
 )
 from resolveqa.contracts.validators import require_posix_relative_path
+from resolveqa.playbook import Playbook
 from resolveqa.sandbox import LocalSandbox
+from .playbook_gate import evaluate_playbook_gate
 
 DEFAULT_MAX_FILES_CHANGED = 3
 DEFAULT_TEST_TIMEOUT_S = 600.0
@@ -740,6 +742,7 @@ class Verification:
         max_files_changed: int | None = None,
         test_timeout_s: float | None = None,
         allow_inline_test_source: bool = False,
+        playbook: Playbook | None = None,
     ) -> None:
         if base_root is not None:
             self.base_root = Path(base_root).resolve()
@@ -762,6 +765,7 @@ class Verification:
         )
         # `test_source_ref` is an evidence reference. Inline source is accepted only when explicitly enabled (tests).
         self.allow_inline_test_source = bool(allow_inline_test_source)
+        self.playbook = playbook
 
     def _pytest_command(self, *targets: str, with_plugin: bool = False) -> str:
         """Build the verifier-controlled pytest command; never uses the patched workspace configuration."""
@@ -954,14 +958,17 @@ class Verification:
                     if not any(runs_dir.iterdir()):
                         runs_dir.rmdir()
 
-    def _exec_test_run(self, workdir: Path, command: str) -> tuple[TestRun, ExecResult]:
+    def _exec_test_run(
+        self, workdir: Path, command: str, timeout_s: float | None = None
+    ) -> tuple[TestRun, ExecResult]:
         try:
             rel_workdir = workdir.resolve().relative_to(self.base_root.resolve()).as_posix()
         except ValueError:
             rel_workdir = workdir.name
 
+        effective_timeout = timeout_s if timeout_s is not None else self.test_timeout_s
         t0 = time.monotonic()
-        exec_res = self.sandbox.exec(rel_workdir, command, timeout_s=self.test_timeout_s)
+        exec_res = self.sandbox.exec(rel_workdir, command, timeout_s=effective_timeout)
         duration_s = round(max(0.0, time.monotonic() - t0), 4)
         combined_log = "\n".join(
             part for part in (exec_res.stdout_ref.strip(), exec_res.stderr_ref.strip()) if part
@@ -1054,7 +1061,42 @@ class Verification:
             f"{base_revision}:{patch.diff_ref}:{','.join(patch.files_changed)}".encode("utf-8")
         ).hexdigest()[:40]
 
+        # Project playbook gate check (Issue #23)
+        gate = evaluate_playbook_gate(
+            source_repo_dir=source_repo_dir,
+            patch=patch,
+            playbook=self.playbook,
+            default_max_files=self.max_files_changed,
+            default_timeout_s=self.test_timeout_s,
+            base_revision=base_revision,
+        )
+        if gate.is_invalid_playbook:
+            sentinel_before = self._sentinel_test_run(
+                single_test_cmd, exit_code=1, log_ref="skipped execution: invalid playbook"
+            )
+            sentinel_after = self._sentinel_test_run(
+                single_test_cmd, exit_code=1, log_ref="skipped execution: invalid playbook"
+            )
+            sentinel_suite = self._sentinel_test_run(
+                self.suite_command, exit_code=1, log_ref="skipped execution: invalid playbook"
+            )
+            verdict = Verdict(
+                before=sentinel_before,
+                after=sentinel_after,
+                suite=sentinel_suite,
+                base_revision=base_revision,
+                fix_revision=fix_revision,
+                result=VerdictResult.REJECTED,
+                reasons=gate.reasons,
+            )
+            return gate.annotate_verdict(verdict)
+
+        effective_max_files = gate.effective_max_files
+        effective_timeout_s = gate.effective_timeout_s
+
         rejection_reasons: list[str] = []
+        if not gate.passed:
+            rejection_reasons.extend(gate.reasons)
 
         if repro.outcome != ReproOutcome.RED_ON_ASSERTION or repro.exit_code == 0:
             rejection_reasons.append(
@@ -1068,9 +1110,9 @@ class Verification:
             rejection_reasons.append("patch_rejected: patch.touches_ci is True")
         if len(patch.files_changed) == 0:
             rejection_reasons.append("patch_rejected: patch.files_changed is empty")
-        if len(patch.files_changed) > self.max_files_changed:
+        if len(patch.files_changed) > effective_max_files:
             rejection_reasons.append(
-                f"patch_rejected: files_changed ({len(patch.files_changed)}) exceeds max_files_changed ({self.max_files_changed})"
+                f"patch_rejected: files_changed ({len(patch.files_changed)}) exceeds max_files_changed ({effective_max_files})"
             )
 
         declared_files_norm: list[str] = []
@@ -1132,21 +1174,24 @@ class Verification:
             if patch_err is not None:
                 if patch_is_env_err:
                     sentinel = self._sentinel_test_run(single_test_cmd, exit_code=2, log_ref=patch_err)
-                    return Verdict(
-                        before=sentinel,
-                        after=sentinel,
-                        suite=self._sentinel_test_run(self.suite_command, exit_code=2, log_ref=patch_err),
-                        base_revision=base_revision,
-                        fix_revision=fix_revision,
-                        result=VerdictResult.ENV_ERROR,
-                        reasons=(patch_err,),
+                    return gate.annotate_verdict(
+                        Verdict(
+                            before=sentinel,
+                            after=sentinel,
+                            suite=self._sentinel_test_run(self.suite_command, exit_code=2, log_ref=patch_err),
+                            base_revision=base_revision,
+                            fix_revision=fix_revision,
+                            result=VerdictResult.ENV_ERROR,
+                            reasons=(patch_err,),
+                        )
                     )
                 rejection_reasons.append(patch_err)
 
-            if len(touched_by_patch) > self.max_files_changed:
+            if len(touched_by_patch) > effective_max_files:
                 rejection_reasons.append(
-                    f"patch_rejected: diff touched {len(touched_by_patch)} files, exceeding max_files_changed ({self.max_files_changed})"
+                    f"patch_rejected: diff touched {len(touched_by_patch)} files, exceeding max_files_changed ({effective_max_files})"
                 )
+            rejection_reasons.extend(gate.check_touched_files(touched_by_patch))
 
             for touched_rel in touched_by_patch:
                 if _is_test_path(touched_rel, norm_test_path):
@@ -1223,14 +1268,16 @@ class Verification:
                 sentinel_suite = self._sentinel_test_run(
                     self.suite_command, exit_code=1, log_ref="skipped execution: static policy or oracle check failed"
                 )
-                return Verdict(
-                    before=sentinel_before,
-                    after=sentinel_after,
-                    suite=sentinel_suite,
-                    base_revision=base_revision,
-                    fix_revision=fix_revision,
-                    result=VerdictResult.REJECTED,
-                    reasons=tuple(dict.fromkeys(rejection_reasons)),
+                return gate.annotate_verdict(
+                    Verdict(
+                        before=sentinel_before,
+                        after=sentinel_after,
+                        suite=sentinel_suite,
+                        base_revision=base_revision,
+                        fix_revision=fix_revision,
+                        result=VerdictResult.REJECTED,
+                        reasons=tuple(dict.fromkeys(rejection_reasons)),
+                    )
                 )
 
             # Fixed verifier-owned configuration (never the patched workspace's own configuration).
@@ -1239,18 +1286,22 @@ class Verification:
             after_test_cmd = self._pytest_command(norm_test_path, with_plugin=True)
 
             # 1. Execute `before` test run
-            before_run, before_exec = self._exec_test_run(before_dir, single_test_cmd)
+            before_run, before_exec = self._exec_test_run(
+                before_dir, single_test_cmd, timeout_s=effective_timeout_s
+            )
             if before_exec.timed_out or before_run.exit_code in (124, 127) or "INTERNALERROR" in before_run.log_ref:
                 sentinel_after = self._sentinel_test_run(single_test_cmd, exit_code=124, log_ref="aborted after before env_error")
                 sentinel_suite = self._sentinel_test_run(self.suite_command, exit_code=124, log_ref="aborted after before env_error")
-                return Verdict(
-                    before=before_run,
-                    after=sentinel_after,
-                    suite=sentinel_suite,
-                    base_revision=base_revision,
-                    fix_revision=fix_revision,
-                    result=VerdictResult.ENV_ERROR,
-                    reasons=("infra_error: environment or timeout failure during before test execution",),
+                return gate.annotate_verdict(
+                    Verdict(
+                        before=before_run,
+                        after=sentinel_after,
+                        suite=sentinel_suite,
+                        base_revision=base_revision,
+                        fix_revision=fix_revision,
+                        result=VerdictResult.ENV_ERROR,
+                        reasons=("infra_error: environment or timeout failure during before test execution",),
+                    )
                 )
 
             # Validate `before` failed specifically on AssertionError without import/collection/setup errors
@@ -1287,19 +1338,23 @@ class Verification:
                 sentinel_suite = self._sentinel_test_run(
                     self.suite_command, exit_code=1, log_ref="skipped after invalid before test run"
                 )
-                return Verdict(
-                    before=before_run,
-                    after=sentinel_after,
-                    suite=sentinel_suite,
-                    base_revision=base_revision,
-                    fix_revision=fix_revision,
-                    result=VerdictResult.REJECTED,
-                    reasons=tuple(dict.fromkeys(rejection_reasons)),
+                return gate.annotate_verdict(
+                    Verdict(
+                        before=before_run,
+                        after=sentinel_after,
+                        suite=sentinel_suite,
+                        base_revision=base_revision,
+                        fix_revision=fix_revision,
+                        result=VerdictResult.REJECTED,
+                        reasons=tuple(dict.fromkeys(rejection_reasons)),
+                    )
                 )
 
             # 2. Execute `after` test run
             if after_test_file.is_file():
-                after_run, after_exec = self._exec_test_run(after_dir, after_test_cmd)
+                after_run, after_exec = self._exec_test_run(
+                    after_dir, after_test_cmd, timeout_s=effective_timeout_s
+                )
             else:
                 after_run = self._sentinel_test_run(
                     single_test_cmd,
@@ -1310,14 +1365,16 @@ class Verification:
 
             if after_exec.timed_out or after_run.exit_code in (124, 127) or "INTERNALERROR" in after_run.log_ref:
                 sentinel_suite = self._sentinel_test_run(self.suite_command, exit_code=124, log_ref="aborted after after-run env_error")
-                return Verdict(
-                    before=before_run,
-                    after=after_run,
-                    suite=sentinel_suite,
-                    base_revision=base_revision,
-                    fix_revision=fix_revision,
-                    result=VerdictResult.ENV_ERROR,
-                    reasons=("infra_error: timeout or sandbox environment error during after test execution",),
+                return gate.annotate_verdict(
+                    Verdict(
+                        before=before_run,
+                        after=after_run,
+                        suite=sentinel_suite,
+                        base_revision=base_revision,
+                        fix_revision=fix_revision,
+                        result=VerdictResult.ENV_ERROR,
+                        reasons=("infra_error: timeout or sandbox environment error during after test execution",),
+                    )
                 )
 
             if _SKIP_OR_XFAIL_SUMMARY_RE.search(after_run.log_ref):
@@ -1338,16 +1395,20 @@ class Verification:
                 )
 
             # 3. Execute `suite` test run on patched workspace
-            suite_run, suite_exec = self._exec_test_run(after_dir, self.suite_command)
+            suite_run, suite_exec = self._exec_test_run(
+                after_dir, self.suite_command, timeout_s=effective_timeout_s
+            )
             if suite_exec.timed_out or suite_run.exit_code in (124, 127) or "INTERNALERROR" in suite_run.log_ref:
-                return Verdict(
-                    before=before_run,
-                    after=after_run,
-                    suite=suite_run,
-                    base_revision=base_revision,
-                    fix_revision=fix_revision,
-                    result=VerdictResult.ENV_ERROR,
-                    reasons=("infra_error: timeout or sandbox environment error during suite execution",),
+                return gate.annotate_verdict(
+                    Verdict(
+                        before=before_run,
+                        after=after_run,
+                        suite=suite_run,
+                        base_revision=base_revision,
+                        fix_revision=fix_revision,
+                        result=VerdictResult.ENV_ERROR,
+                        reasons=("infra_error: timeout or sandbox environment error during suite execution",),
+                    )
                 )
 
             if _SKIP_OR_XFAIL_SUMMARY_RE.search(suite_run.log_ref):
@@ -1365,24 +1426,28 @@ class Verification:
 
         deduped_reasons = tuple(dict.fromkeys(rejection_reasons))
         if deduped_reasons:
-            return Verdict(
+            return gate.annotate_verdict(
+                Verdict(
+                    before=before_run,
+                    after=after_run,
+                    suite=suite_run,
+                    base_revision=base_revision,
+                    fix_revision=fix_revision,
+                    result=VerdictResult.REJECTED,
+                    reasons=deduped_reasons,
+                )
+            )
+
+        return gate.annotate_verdict(
+            Verdict(
                 before=before_run,
                 after=after_run,
                 suite=suite_run,
                 base_revision=base_revision,
                 fix_revision=fix_revision,
-                result=VerdictResult.REJECTED,
-                reasons=deduped_reasons,
+                result=VerdictResult.VERIFIED,
+                reasons=(RESIDUAL_RISK_NOTE,),
             )
-
-        return Verdict(
-            before=before_run,
-            after=after_run,
-            suite=suite_run,
-            base_revision=base_revision,
-            fix_revision=fix_revision,
-            result=VerdictResult.VERIFIED,
-            reasons=(RESIDUAL_RISK_NOTE,),
         )
 
 
