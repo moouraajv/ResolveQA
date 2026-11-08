@@ -143,13 +143,13 @@ class TestLocalSandbox(unittest.TestCase):
         try:
             cmd = (
                 "python3 -c \""
-                "import subprocess, time; "
+                "import os, subprocess, time; "
                 "child = subprocess.Popen(['python3', '-c', 'import time; time.sleep(30)']); "
-                f"open({str(pid_path)!r}, 'w').write(str(child.pid)); "
+                f"f = open({str(pid_path)!r}, 'w'); f.write(str(child.pid)); f.flush(); os.fsync(f.fileno()); f.close(); "
                 "time.sleep(30)"
                 "\""
             )
-            res = sandbox.exec("demo-target", cmd, timeout_s=0.25)
+            res = sandbox.exec("demo-target", cmd, timeout_s=1.0)
             self.assertTrue(res.timed_out)
             self.assertEqual(res.exit_code, 124)
 
