@@ -13,16 +13,19 @@ Routes (ephemeral / local-demo; no auth, no cloud):
   GET  /chat                   -> simulated messaging UI (permanent "Canal simulado" label)
   POST /chat/messages          -> form create via Intake channel=simulated_chat
   POST /api/chat/messages      -> JSON create via Intake channel=simulated_chat
+  OPTIONS /*                   -> CORS preflight for allow-listed Origins
 
 Missing or blank client_id is refused with HTTP 400 and a clear error message.
 API/form behavior from issue #13 is preserved; chat reuses the same Intake instance.
 Timeline/reply never invent pipeline progress; they only reflect stored events / terminal state.
+CORS allow-list: RESOLVEQA_CORS_ORIGINS (comma/newline) or demo defaults (localhost:3000 + public front).
 """
 
 from __future__ import annotations
 
 import html
 import json
+import os
 import re
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -53,6 +56,19 @@ _CASE_TIMELINE_HTML_RE = re.compile(r"^/cases/([^/]+)/timeline$")
 _CASE_REPLY_API_RE = re.compile(r"^/api/cases/([^/]+)/reply$")
 _CASE_DELIVERY_API_RE = re.compile(r"^/api/cases/([^/]+)/delivery$")
 _DEFAULT_RUNS_ROOT = Path("runs")
+_DEFAULT_CORS_ORIGINS = (
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+    "https://d10ry6ff7l79jo.cloudfront.net",
+)
+
+
+def _parse_cors_origins(raw: str | None) -> frozenset[str]:
+    """Parse a comma/newline-separated allow-list of browser Origins."""
+    if raw is None:
+        return frozenset(_DEFAULT_CORS_ORIGINS)
+    items = [part.strip() for part in re.split(r"[\n,]", raw) if part.strip()]
+    return frozenset(items)
 
 
 def _json_bytes(payload: Any, *, status: int = HTTPStatus.OK) -> tuple[int, bytes, str]:
@@ -138,11 +154,35 @@ class IntakeRequestHandler(BaseHTTPRequestHandler):
         # Keep test output quiet; still available if server.log is enabled later.
         return
 
+    @property
+    def cors_origins(self) -> frozenset[str]:
+        return getattr(self.server, "cors_origins", frozenset())  # type: ignore[attr-defined]
+
+    def _cors_origin(self) -> str | None:
+        origin = (self.headers.get("Origin") or "").strip()
+        if origin and origin in self.cors_origins:
+            return origin
+        return None
+
+    def _apply_cors_headers(self) -> None:
+        origin = self._cors_origin()
+        if origin is None:
+            return
+        self.send_header("Access-Control-Allow-Origin", origin)
+        self.send_header("Vary", "Origin")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS, HEAD")
+        self.send_header(
+            "Access-Control-Allow-Headers",
+            "Content-Type, Accept, X-Requested-With",
+        )
+        self.send_header("Access-Control-Max-Age", "86400")
+
     def _write(self, status: int, body: bytes, content_type: str) -> None:
         self.send_response(status)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
+        self._apply_cors_headers()
         self.end_headers()
         self.wfile.write(body)
 
@@ -151,6 +191,19 @@ class IntakeRequestHandler(BaseHTTPRequestHandler):
         if length < 0 or length > 1_000_000:
             raise ValueError("invalid Content-Length")
         return self.rfile.read(length) if length else b""
+
+    def do_OPTIONS(self) -> None:  # noqa: N802
+        """Browser CORS preflight for cross-origin Admin/Quadro clients."""
+        origin = self._cors_origin()
+        if origin is None:
+            self.send_response(HTTPStatus.FORBIDDEN)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
+        self.send_response(HTTPStatus.NO_CONTENT)
+        self.send_header("Content-Length", "0")
+        self._apply_cors_headers()
+        self.end_headers()
 
     def do_GET(self) -> None:  # noqa: N802
         path = self.path.split("?", 1)[0]
@@ -613,6 +666,7 @@ class IntakeHTTPServer(ThreadingHTTPServer):
         delivery_builder: DeliveryBuilder | None = None,
         playbook: Playbook | None = None,
         playbook_path: Path | str | None = None,
+        cors_origins: frozenset[str] | set[str] | list[str] | None = None,
     ) -> None:
         self.intake = intake if intake is not None else Intake()
         self.runs_root = Path(runs_root) if runs_root is not None else _DEFAULT_RUNS_ROOT
@@ -626,6 +680,10 @@ class IntakeHTTPServer(ThreadingHTTPServer):
             if delivery_builder is not None
             else DeliveryBuilder(runs_root=self.runs_root, playbook=loaded)
         )
+        if cors_origins is None:
+            self.cors_origins = _parse_cors_origins(os.environ.get("RESOLVEQA_CORS_ORIGINS"))
+        else:
+            self.cors_origins = frozenset(cors_origins)
         super().__init__(server_address, IntakeRequestHandler)
 
 
