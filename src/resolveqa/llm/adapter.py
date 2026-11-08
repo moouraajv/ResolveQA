@@ -15,6 +15,7 @@ from resolveqa.sandbox.executor import redact_secrets
 REPO_ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_LIMITS_PATH = REPO_ROOT / "config" / "limits.json"
 
+ALLOWED_PURPOSES = frozenset({"triage", "reproduction", "fix"})
 FORBIDDEN_REPRO_IMPORTS = frozenset({"os", "subprocess", "shutil", "socket", "http", "urllib"})
 
 
@@ -90,10 +91,18 @@ def validate_llm_output(
     schema: Optional[dict[str, Any]] = None,
 ) -> None:
     """Validate LLM response `content` against the built-in purpose schema and optional custom `schema`."""
-    if not isinstance(content, str) or not content.strip():
-        raise LLMOutputError(f"Empty LLM output for purpose={purpose!r}", purpose=purpose)
+    if not isinstance(purpose, str) or not purpose.strip():
+        raise LLMOutputError("LLM purpose must be a non-empty string", purpose=str(purpose))
 
     norm_purpose = purpose.strip().lower()
+    if norm_purpose not in ALLOWED_PURPOSES:
+        raise LLMOutputError(
+            f"Unsupported LLM purpose {purpose!r}; allowed purposes are {sorted(ALLOWED_PURPOSES)}",
+            purpose=purpose,
+        )
+
+    if not isinstance(content, str) or not content.strip():
+        raise LLMOutputError(f"Empty LLM output for purpose={purpose!r}", purpose=purpose)
 
     if norm_purpose == "triage":
         try:
@@ -222,12 +231,10 @@ def validate_llm_output(
                 _validate_against_json_schema(payload, schema, purpose)
         return
 
-    if schema is not None:
-        try:
-            payload = json.loads(content)
-        except Exception as err:
-            raise LLMOutputError(f"Invalid JSON output for custom schema ({purpose!r}): {err}", purpose=purpose) from err
-        _validate_against_json_schema(payload, schema, purpose)
+    raise LLMOutputError(
+        f"Unsupported LLM purpose {purpose!r}; allowed purposes are {sorted(ALLOWED_PURPOSES)}",
+        purpose=purpose,
+    )
 
 
 _UNTRUSTED_TAG_BREAKOUT_RE = re.compile(r"<\s*/?\s*untrusted_data\b[^>]*>", re.IGNORECASE)
@@ -269,26 +276,125 @@ def build_delimited_messages(
     ]
 
 
+def _is_valid_builder_system_message(content: str) -> bool:
+    """Return True only if `content` was structured by `build_delimited_messages` with `INERT_DATA_SYSTEM_NOTICE`."""
+    if not isinstance(content, str) or not content.strip():
+        return False
+    if content == INERT_DATA_SYSTEM_NOTICE:
+        return True
+    if not content.endswith(f"\n\n{INERT_DATA_SYSTEM_NOTICE}"):
+        return False
+    prefix = content[: -len(f"\n\n{INERT_DATA_SYSTEM_NOTICE}")]
+    if _UNTRUSTED_TAG_BREAKOUT_RE.search(prefix):
+        return False
+    return True
+
+
 def _require_delimited_untrusted_messages(
     messages: list[dict[str, str]],
     active_case: Optional[RunState] = None,
 ) -> None:
-    """Verify that user messages carry delimited `<untrusted_data>` blocks and never raw report text."""
-    user_contents = [str(m.get("content", "")) for m in messages if str(m.get("role", "user")) == "user"]
-    combined_user = "\n".join(user_contents)
-    blocks = _DELIMITED_BLOCK_RE.findall(combined_user)
-    if not blocks:
+    """Verify ALL messages: require bound RunState, builder-only system messages, and strictly delimited user messages."""
+    if active_case is None or not isinstance(active_case, RunState):
         raise ValueError(
-            "Untrusted input in user messages must be wrapped with delimit_untrusted_data (<untrusted_data> tags)."
+            "A bound RunState (via LLMAdapter(case=...) or complete(..., case=...)) is required "
+            "to verify untrusted report delimitation (RNF-02, RNF-04)."
         )
-    if active_case is not None and active_case.report_text.strip():
-        outside = _DELIMITED_BLOCK_RE.sub("", combined_user)
-        if active_case.report_text.strip() in outside:
-            raise ValueError("Raw report_text cannot be passed outside <untrusted_data> delimiters.")
+    raw_report = active_case.report_text.strip() if isinstance(active_case.report_text, str) else ""
+    if not raw_report:
+        raise ValueError("Bound RunState must contain a non-empty report_text.")
+    redacted_report = redact_secrets(raw_report)
+
+    system_count = 0
+    user_count = 0
+    user_blocks: list[str] = []
+
+    for idx, msg in enumerate(messages):
+        if not isinstance(msg, dict):
+            raise ValueError(f"Message at index {idx} must be a dict, got {type(msg).__name__}.")
+        role = msg.get("role")
+        content = msg.get("content")
+        if role not in {"system", "user"}:
+            raise ValueError(
+                f"Invalid message role {role!r} at index {idx}: only 'system' and 'user' are allowed."
+            )
+        if not isinstance(content, str) or not content.strip():
+            raise ValueError(f"Message content at index {idx} must be a non-empty string.")
+
+        if role == "system":
+            system_count += 1
+            if not _is_valid_builder_system_message(content):
+                raise ValueError(
+                    "System message must be created by build_delimited_messages with INERT_DATA_SYSTEM_NOTICE as fixed marker."
+                )
+            if raw_report in content or (redacted_report and redacted_report in content):
+                raise ValueError("Raw report_text is forbidden inside system messages (RNF-02).")
+        elif role == "user":
+            user_count += 1
+            blocks = _DELIMITED_BLOCK_RE.findall(content)
+            if not blocks:
+                raise ValueError(
+                    "Untrusted input in user messages must be wrapped with delimit_untrusted_data (<untrusted_data> tags)."
+                )
+            outside = _DELIMITED_BLOCK_RE.sub("", content)
+            if outside.strip():
+                raise ValueError(
+                    "User messages must contain only <untrusted_data> blocks; raw text outside delimiters is forbidden."
+                )
+            user_blocks.extend(blocks)
+
+    if system_count == 0:
+        raise ValueError(
+            "Messages must include a system message built by build_delimited_messages with INERT_DATA_SYSTEM_NOTICE."
+        )
+    if user_count == 0 or not user_blocks:
+        raise ValueError(
+            "Messages must include at least one user message with <untrusted_data> blocks."
+        )
+
+
+def record_llm_calls_in_state(case: RunState, llm_calls: int) -> RunState:
+    """Return a new `RunState` with `attempts.llm_calls` updated, without mutating `case` in place.
+
+    Per RFC-0001 §3.3, the Orchestrator owns state transitions and must persist the cumulative
+    `result.llm_calls` into `RunState.attempts.llm_calls` so subsequent adapter instances
+    seeded from `RunState` enforce the per-case `max_llm_calls` budget.
+    """
+    new_attempts = Attempts(fix=int(case.attempts.fix), llm_calls=int(llm_calls))
+    ev_collection: Any = (
+        tuple(case.evidence_ids) if isinstance(case.evidence_ids, tuple) else list(case.evidence_ids)
+    )
+    return RunState(
+        case_id=case.case_id,
+        client_id=case.client_id,
+        repo_ref=case.repo_ref,
+        channel=case.channel,
+        report_text=case.report_text,
+        state=case.state,
+        created_at=case.created_at,
+        updated_at=case.updated_at,
+        terminal_reason=case.terminal_reason,
+        attempts=new_attempts,
+        base_revision=case.base_revision,
+        fix_revision=case.fix_revision,
+        evidence_ids=ev_collection,
+    )
 
 
 class DeterministicMockLLM:
-    """Deterministic LLM adapter for testing, offline execution, and replay (RFC-0001 §3.3, D3)."""
+    """Deterministic LLM adapter for testing, offline execution, and replay (RFC-0001 §3.3, D3).
+
+    Budget & Immutability Contract (RFC-0001 §3.3, §5):
+    - `LLMAdapter` never mutates the received `RunState` or `Attempts` in place.
+    - Every `complete()` invocation exposes `result.calls_consumed` (`1`) and `result.llm_calls`
+      (cumulative calls for the case) on the returned `LLMResult`.
+    - The **Orchestrator** is the owner of the per-case limit across instances and must record
+      `result.llm_calls` into `RunState.attempts.llm_calls` (e.g. via `record_llm_calls_in_state`
+      or `adapter.record_calls_in_state(case, result)`).
+    - When a new `LLMAdapter` instance is bound to a `RunState` (`LLMAdapter(case=...)`,
+      `bind_case(case)`, or `complete(..., case=case)`), it seeds its counter from
+      `case.attempts.llm_calls` so the 12-call limit is enforced across instances.
+    """
 
     def __init__(
         self,
@@ -297,10 +403,11 @@ class DeterministicMockLLM:
         provider: str = "mock",
         model: str = "deterministic-mock-v1",
         response_override: Optional[str | Callable[[str, list[dict[str, str]], Optional[dict[str, Any]]], str]] = None,
+        initial_llm_calls: Optional[int] = None,
     ) -> None:
         self._case: Optional[RunState] = None
         self._calls_by_case: dict[str, int] = {}
-        self._standalone_calls: int = 0
+        self._standalone_calls: int = int(initial_llm_calls) if initial_llm_calls is not None else 0
         self.max_llm_calls = (
             int(max_llm_calls) if max_llm_calls is not None else load_max_llm_calls()
         )
@@ -309,13 +416,21 @@ class DeterministicMockLLM:
         self.response_override = response_override
         self.audit_log: list[dict[str, Any]] = []
         if case is not None:
-            self.bind_case(case)
+            self.bind_case(case, initial_llm_calls=initial_llm_calls)
 
-    def bind_case(self, case: RunState) -> None:
-        """Bind a `RunState` reference without mutating it."""
+    def bind_case(self, case: RunState, initial_llm_calls: Optional[int] = None) -> None:
+        """Bind a `RunState` reference without mutating it, seeding call count from `case.attempts.llm_calls`."""
         self._case = case
         prev = self._calls_by_case.get(case.case_id, 0)
-        self._calls_by_case[case.case_id] = max(prev, int(case.attempts.llm_calls))
+        seeded = max(prev, int(case.attempts.llm_calls))
+        if initial_llm_calls is not None:
+            seeded = max(seeded, int(initial_llm_calls))
+        self._calls_by_case[case.case_id] = seeded
+
+    def record_calls_in_state(self, case: RunState, result: Optional[LLMResult] = None) -> RunState:
+        """Return a new `RunState` recording the updated `llm_calls` count for the orchestrator."""
+        count = int(getattr(result, "llm_calls", self.get_llm_calls(case)))
+        return record_llm_calls_in_state(case, count)
 
     def get_llm_calls(self, case: Optional[RunState | str] = None) -> int:
         """Return the total LLM calls consumed for the given case (or bound/standalone context)."""
@@ -346,7 +461,12 @@ class DeterministicMockLLM:
         *,
         case: Optional[RunState] = None,
     ) -> LLMResult:
-        """Deterministically produce an `LLMResult` while enforcing `max_llm_calls`, schema validation, and secret scrubbing."""
+        """Deterministically produce an `LLMResult` while enforcing `max_llm_calls`, schema validation, and secret scrubbing.
+
+        Returns an `LLMResult` with `result.calls_consumed == 1` and `result.llm_calls` set to the
+        new cumulative call count for the bound `RunState`. Because `RunState` is immutable, the
+        orchestrator is responsible for persisting `result.llm_calls` into `RunState.attempts.llm_calls`.
+        """
         active_case = case if case is not None else self._case
         if active_case is not None:
             current_calls = max(
@@ -360,7 +480,12 @@ class DeterministicMockLLM:
             raise LLMLimitExceededError(self.max_llm_calls)
 
         if not isinstance(purpose, str) or not purpose.strip():
-            raise ValueError("purpose must be a non-empty string")
+            raise LLMOutputError("purpose must be a non-empty string", purpose=str(purpose))
+        if purpose.strip().lower() not in ALLOWED_PURPOSES:
+            raise LLMOutputError(
+                f"Unsupported LLM purpose {purpose!r}; allowed purposes are {sorted(ALLOWED_PURPOSES)}",
+                purpose=purpose,
+            )
         if not isinstance(messages, list) or not messages:
             raise ValueError("messages must be a non-empty list")
 
@@ -491,15 +616,9 @@ class DeterministicMockLLM:
                 sort_keys=True,
             )
 
-        canonical_payload = json.dumps(
-            {"purpose": purpose, "messages": messages, "schema": schema},
-            sort_keys=True,
-            ensure_ascii=False,
-        )
-        digest = hashlib.sha256(canonical_payload.encode("utf-8")).hexdigest()[:16]
-        return json.dumps(
-            {"purpose": purpose, "deterministic_digest": digest, "mock": True},
-            sort_keys=True,
+        raise LLMOutputError(
+            f"Unsupported LLM purpose {purpose!r}; allowed purposes are {sorted(ALLOWED_PURPOSES)}",
+            purpose=purpose,
         )
 
 
