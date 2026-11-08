@@ -807,6 +807,29 @@ def test_half_price():
         self.assertEqual(verdict.result, VerdictResult.REJECTED)
         self.assertIn("does not match the report", " ".join(verdict.reasons))
 
+    def test_before_and_after_commands_are_equal_and_omit_plugin_flag(self) -> None:
+        verdict = self._run(VALID_CHECKOUT_PATCH_DIFF)
+        self.assertEqual(verdict.result, VerdictResult.VERIFIED, verdict.reasons)
+        self.assertEqual(verdict.before.command, verdict.after.command)
+        self.assertNotIn("-p _rqa_verifier_plugin", verdict.before.command)
+        self.assertNotIn("-p _rqa_verifier_plugin", verdict.after.command)
+
+    def test_x3_always_true_eq_is_rejected_on_after_execution(self) -> None:
+        from resolveqa.verification import verifier as verifier_module
+
+        eq_diff = VALID_CHECKOUT_PATCH_DIFF.replace(
+            "+    return round(float(subtotal) - discount, 2)",
+            "+    class _AlwaysTrue:\n"
+            "+        def __eq__(self, other):\n"
+            "+            return True\n"
+            "+    return _AlwaysTrue()",
+        )
+        with mock_patch.object(verifier_module, "_ast_target_code_violations", return_value=[]), \
+             mock_patch.object(verifier_module, "_flagged_spoofing_nodes", return_value={}):
+            verdict = self._run(eq_diff)
+        self.assertEqual(verdict.result, VerdictResult.REJECTED)
+        self.assertIn("RQA_TYPE_MISMATCH", verdict.after.log_ref)
+
 
 if __name__ == "__main__":
     unittest.main()

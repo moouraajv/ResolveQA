@@ -1290,7 +1290,11 @@ class Verification:
                         runs_dir.rmdir()
 
     def _exec_test_run(
-        self, workdir: Path, command: str, timeout_s: float | None = None
+        self,
+        workdir: Path,
+        command: str,
+        timeout_s: float | None = None,
+        recorded_command: str | None = None,
     ) -> tuple[TestRun, ExecResult]:
         try:
             rel_workdir = workdir.resolve().relative_to(self.base_root.resolve()).as_posix()
@@ -1306,7 +1310,7 @@ class Verification:
         )
         return (
             TestRun(
-                command=command,
+                command=recorded_command if recorded_command is not None else command,
                 exit_code=exec_res.exit_code,
                 duration_s=duration_s,
                 log_ref=combined_log,
@@ -1778,7 +1782,10 @@ class Verification:
             # 2. Execute `after` test run
             if after_test_file.is_file():
                 after_run, after_exec = self._exec_test_run(
-                    after_dir, after_test_cmd, timeout_s=effective_timeout_s
+                    after_dir,
+                    after_test_cmd,
+                    timeout_s=effective_timeout_s,
+                    recorded_command=single_test_cmd,
                 )
             else:
                 after_run = self._sentinel_test_run(
