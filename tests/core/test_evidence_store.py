@@ -54,6 +54,74 @@ class TestEvidenceStore(unittest.TestCase):
                 self.assertNotIn(secret, saved_text)
             self.assertIn("[REDACTED_SECRET]", saved_text)
 
+    def test_redact_secrets_handles_json_keys_aws_keys_pem_blocks_and_github_pat(self) -> None:
+        """47-1 regression: scrub JSON password key, aws_secret_access_key, PEM private keys, and github_pat_."""
+        raw_json = '{"user": "admin", "password": "hunter2senha", "other": 123}'
+        scrubbed_json = redact_secrets(raw_json)
+        self.assertNotIn("hunter2senha", scrubbed_json)
+        self.assertIn('"password": "[REDACTED_SECRET]"', scrubbed_json)
+
+        raw_aws = "aws_secret_access_key = wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+        scrubbed_aws = redact_secrets(raw_aws)
+        self.assertNotIn("wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY", scrubbed_aws)
+        self.assertIn("aws_secret_access_key = [REDACTED_SECRET]", scrubbed_aws)
+
+        raw_pem = (
+            "-----BEGIN RSA PRIVATE KEY-----\n"
+            "MIIEowIBAAKCAQEA0Y...\n"
+            "-----END RSA PRIVATE KEY-----"
+        )
+        scrubbed_pem = redact_secrets(raw_pem)
+        self.assertNotIn("MIIEowIBAAKCAQEA0Y", scrubbed_pem)
+        self.assertNotIn("BEGIN RSA PRIVATE KEY", scrubbed_pem)
+        self.assertIn("[REDACTED_SECRET]", scrubbed_pem)
+
+        raw_pat = "deploy token: github_pat_11ABCD_1234567890abcdefghijklmnopqrstuvwxyz"
+        scrubbed_pat = redact_secrets(raw_pat)
+        self.assertNotIn("github_pat_11ABCD_1234567890abcdefghijklmnopqrstuvwxyz", scrubbed_pat)
+        self.assertIn("[REDACTED_SECRET]", scrubbed_pat)
+
+    def test_evidence_id_rejects_glob_characters_and_does_not_use_glob_for_existence(self) -> None:
+        """47-2 regression: evidence_id rejects '*' and '?', only [A-Za-z0-9_-] allowed, non-glob existence checks."""
+        with tempfile.TemporaryDirectory() as tmp:
+            store = EvidenceStore(runs_root=tmp)
+
+            # Creating an evidence file
+            store.save_evidence(
+                case_id="case-glob",
+                evidence_id="ev-alpha",
+                kind=EvidenceKind.REPORT,
+                content="test content",
+            )
+
+            # '*' must not write a literal or globbed file
+            for bad_id in ("*", "ev-*", "ev-?", "?", "[a-z]", "ev-alpha*"):
+                with self.subTest(bad_id=bad_id):
+                    with self.assertRaises(ValueError):
+                        store.save_evidence(
+                            case_id="case-glob",
+                            evidence_id=bad_id,
+                            kind=EvidenceKind.REPORT,
+                            content="payload",
+                        )
+
+            # '?' must not trigger a false FileExistsError
+            # A valid ID like 'ev-beta' must succeed without false positives
+            ev_beta = store.save_evidence(
+                case_id="case-glob",
+                evidence_id="ev-beta",
+                kind=EvidenceKind.REPORT,
+                content="beta payload",
+            )
+            self.assertEqual(ev_beta.evidence_id, "ev-beta")
+
+            # Check that wildcard files were not created in the directory
+            ev_dir = Path(tmp) / "case-glob" / "evidence"
+            created_names = [p.name for p in ev_dir.iterdir()]
+            for name in created_names:
+                self.assertNotIn("*", name)
+                self.assertNotIn("?", name)
+
     def test_refuses_overwrite_of_existing_evidence_id_and_generates_unique_ids(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             store = EvidenceStore(runs_root=tmp)
@@ -106,7 +174,8 @@ class TestEvidenceStore(unittest.TestCase):
             self.assertNotEqual(auto1.evidence_id, auto2.evidence_id)
             self.assertNotEqual(auto1.path, auto2.path)
 
-    def test_blocks_path_traversal_in_case_id_and_evidence_id(self) -> None:
+    def test_blocks_path_traversal_in_case_id_and_evidence_id_and_evidence_symlink(self) -> None:
+        """Reject path traversal, case_dir symlink, and evidence directory symlink."""
         with tempfile.TemporaryDirectory() as tmp:
             store = EvidenceStore(runs_root=tmp)
             bad_values = ["../escape", "../../etc/passwd", "/abs/path", "a/b", "a\\b", ".", "..", ""]
@@ -129,13 +198,28 @@ class TestEvidenceStore(unittest.TestCase):
                                 content="x",
                             )
 
-            # Also block symlink traversal on case_dir or evidence_dir
+            # Case_dir as symlink
             with tempfile.TemporaryDirectory() as outside_tmp:
                 symlink_case = Path(tmp) / "case-symlink"
                 symlink_case.symlink_to(outside_tmp)
                 with self.assertRaises(ValueError):
                     store.save_evidence(
                         case_id="case-symlink",
+                        evidence_id="ev-001",
+                        kind=EvidenceKind.REPORT,
+                        content="x",
+                    )
+
+            # Evidence directory as symlink (test gap requirement)
+            with tempfile.TemporaryDirectory() as outside_ev_tmp:
+                case_with_ev_symlink = Path(tmp) / "case-ev-symlink"
+                case_with_ev_symlink.mkdir(parents=True, exist_ok=True)
+                (case_with_ev_symlink / "evidence").symlink_to(outside_ev_tmp)
+                with self.assertRaises(ValueError):
+                    store.evidence_dir("case-ev-symlink")
+                with self.assertRaises(ValueError):
+                    store.save_evidence(
+                        case_id="case-ev-symlink",
                         evidence_id="ev-001",
                         kind=EvidenceKind.REPORT,
                         content="x",

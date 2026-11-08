@@ -15,6 +15,7 @@ from resolveqa.contracts import Evidence, EvidenceKind
 REPO_ROOT = Path(__file__).resolve().parents[3]
 
 _SECRET_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"-----BEGIN [A-Z0-9_ -]*PRIVATE KEY-----[\s\S]*?-----END [A-Z0-9_ -]*PRIVATE KEY-----"),
     re.compile(r"\bsk-[A-Za-z0-9_-]{8,}\b"),
     re.compile(r"\brc_[A-Za-z0-9_-]{8,}\b"),
     re.compile(r"\bgh[pousr]_[A-Za-z0-9]{8,}\b"),
@@ -22,12 +23,16 @@ _SECRET_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"\bAKIA[0-9A-Z]{16}\b"),
     re.compile(r"(?i)(bearer\s+)[A-Za-z0-9._\-]{8,}"),
     re.compile(
-        r"(?i)((?:api[_-]?key|token|secret|password|authorization|featherless_api_key)\s*[:=]\s*['\"]?)([^\s'\",;]+)"
+        r"""(?i)(["']?(?:[A-Za-z0-9_-]*(?:api[_-]?key|token|secret|password|authorization|featherless_api_key|aws_secret_access_key)[A-Za-z0-9_-]*)["']?\s*[:=]\s*["'])([^"\r\n]+)(["'])"""
+    ),
+    re.compile(
+        r"""(?i)(["']?(?:[A-Za-z0-9_-]*(?:api[_-]?key|token|secret|password|authorization|featherless_api_key|aws_secret_access_key)[A-Za-z0-9_-]*)["']?\s*[:=]\s*)([^\s'",;}]+)"""
     ),
 )
 
 _SENSITIVE_ENV_PREFIXES = ("OPENAI_", "ANTHROPIC_", "GEMINI_", "GITHUB_", "GH_", "AWS_", "FEATHERLESS_")
 _SENSITIVE_ENV_SUFFIXES = ("_TOKEN", "_KEY", "_SECRET", "_PASSWORD", "_CREDENTIALS")
+_SAFE_IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 
 
 def redact_secrets(text: str) -> str:
@@ -47,8 +52,10 @@ def redact_secrets(text: str) -> str:
     scrubbed = _SECRET_PATTERNS[2].sub("[REDACTED_SECRET]", scrubbed)
     scrubbed = _SECRET_PATTERNS[3].sub("[REDACTED_SECRET]", scrubbed)
     scrubbed = _SECRET_PATTERNS[4].sub("[REDACTED_SECRET]", scrubbed)
-    scrubbed = _SECRET_PATTERNS[5].sub(r"\1[REDACTED_SECRET]", scrubbed)
+    scrubbed = _SECRET_PATTERNS[5].sub("[REDACTED_SECRET]", scrubbed)
     scrubbed = _SECRET_PATTERNS[6].sub(r"\1[REDACTED_SECRET]", scrubbed)
+    scrubbed = _SECRET_PATTERNS[7].sub(r"\1[REDACTED_SECRET]\3", scrubbed)
+    scrubbed = _SECRET_PATTERNS[8].sub(r"\1[REDACTED_SECRET]", scrubbed)
     return scrubbed
 
 
@@ -60,15 +67,21 @@ def _validate_safe_identifier(value: str, field_name: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise ValueError(f"{field_name} must be a non-empty string")
     cleaned = value.strip()
-    if (
-        "/" in cleaned
-        or "\\" in cleaned
-        or ".." in cleaned
-        or cleaned in {".", ".."}
-        or any(ord(ch) < 32 or ord(ch) == 127 for ch in cleaned)
-    ):
-        raise ValueError(f"Unsafe path characters in {field_name}: {value!r}")
+    if not _SAFE_IDENTIFIER_RE.match(cleaned):
+        raise ValueError(
+            f"Invalid characters in {field_name}: {value!r}. Only [A-Za-z0-9_-] are allowed without glob/traversal characters."
+        )
     return cleaned
+
+
+def _evidence_id_exists(directory: Path, evidence_id: str) -> bool:
+    if not directory.exists() or not directory.is_dir():
+        return False
+    target_prefix = f"{evidence_id}."
+    for child in directory.iterdir():
+        if child.name == evidence_id or child.name.startswith(target_prefix):
+            return True
+    return False
 
 
 class EvidenceStore:
@@ -96,7 +109,7 @@ class EvidenceStore:
         ev_dir = raw_ev_dir.resolve()
         if not ev_dir.is_relative_to(c_dir) or not ev_dir.is_relative_to(self.runs_root):
             raise ValueError(f"evidence directory resolves outside case_dir: {case_id!r}")
-        return ev_dir
+        return raw_ev_dir
 
     def next_evidence_id(self, case_id: str, prefix: str = "ev") -> str:
         """Generate a unique `evidence_id` for `case_id` that does not collide with any existing file."""
@@ -106,7 +119,7 @@ class EvidenceStore:
         seq = self._counters.get(safe_case_id, 0) + 1
         while True:
             candidate = f"{safe_prefix}-{seq:04d}-{uuid.uuid4().hex[:8]}"
-            if not ev_dir.exists() or not any(ev_dir.glob(f"{candidate}.*")):
+            if not _evidence_id_exists(ev_dir, candidate):
                 self._counters[safe_case_id] = seq
                 return candidate
             seq += 1
@@ -134,11 +147,15 @@ class EvidenceStore:
         else:
             safe_ev_id = _validate_safe_identifier(evidence_id, "evidence_id")
 
-        safe_ext = "".join(ch for ch in extension.lstrip(".") if ch.isalnum() or ch in {"_", "-"}) or "txt"
+        safe_ext = "".join(ch for ch in extension.lstrip(".") if ch.isalnum() or ch in {"_", "-"}).strip("-_") or "txt"
 
         c_dir = self.case_dir(safe_case_id)
         ev_dir = self.evidence_dir(safe_case_id)
+        if ev_dir.is_symlink():
+            raise ValueError(f"Symlink not allowed for evidence directory: {safe_case_id!r}")
         ev_dir.mkdir(parents=True, exist_ok=True)
+        if ev_dir.is_symlink():
+            raise ValueError(f"Symlink not allowed for evidence directory: {safe_case_id!r}")
 
         rel_path = f"evidence/{safe_ev_id}.{safe_ext}"
         raw_full_path = c_dir / rel_path
@@ -148,7 +165,7 @@ class EvidenceStore:
         if not full_path.is_relative_to(c_dir) or not full_path.is_relative_to(self.runs_root):
             raise ValueError(f"Evidence path resolves outside case directory: {rel_path}")
 
-        if full_path.exists() or any(ev_dir.glob(f"{safe_ev_id}.*")):
+        if full_path.exists() or _evidence_id_exists(ev_dir, safe_ev_id):
             raise FileExistsError(
                 f"Evidence ID {safe_ev_id!r} already exists for case {safe_case_id!r}; overwrite is forbidden."
             )
