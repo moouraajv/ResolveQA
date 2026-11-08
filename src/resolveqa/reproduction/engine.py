@@ -6,7 +6,9 @@ import json
 import os
 import re
 import shutil
+import sys
 import tempfile
+import ast
 from pathlib import Path
 from typing import Any, Optional
 
@@ -26,17 +28,26 @@ from resolveqa.store.evidence_store import EvidenceStore
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 
-_GENUINE_ENV_ERROR_MARKERS = (
-    "ImportError",
-    "ModuleNotFoundError",
-    "SyntaxError",
-    "IndentationError",
-    "TabError",
-    "No such file or directory",
-    "command not found",
-    "Target repository",
-    "does not exist",
+# Exception TYPES (read from the unittest traceback, never substrings of the whole log) that mean the
+# test could not be loaded/run because of the environment rather than because of the reported defect.
+_ENV_EXCEPTION_TYPES = frozenset(
+    {
+        "ImportError",
+        "ModuleNotFoundError",
+        "SyntaxError",
+        "IndentationError",
+        "TabError",
+    }
 )
+_SECTION_SPLIT_RE = re.compile(r"^={10,}\s*$", re.MULTILINE)
+_SECTION_HEADER_RE = re.compile(r"^(FAIL|ERROR):\s+(\S+)\s*(?:\((.*)\))?", re.MULTILINE)
+_EXCEPTION_LINE_RE = re.compile(
+    r"^((?:[A-Za-z_]\w*\.)*[A-Za-z_]\w*(?:Error|Exception|Exit|Warning))(?::|$)", re.MULTILINE
+)
+_RAN_RE = re.compile(r"^Ran\s+([1-9]\d*)\s+tests?\b", re.MULTILINE)
+_COMPARE_FAILURE_RE = re.compile(r"AssertionError:\s*(.*?)\s!=\s(.*?)(?:\swithin\s|\s:\s|$)")
+_CONVERSION_BUILTINS = frozenset({"round", "float", "int", "str", "abs", "Decimal"})
+_EQUALITY_ASSERTS = frozenset({"assertEqual", "assertEquals", "assertAlmostEqual", "assertAlmostEquals"})
 
 
 def _normalize_numbers(text: str) -> list[float]:
@@ -124,60 +135,166 @@ def _test_code_asserts_expected(test_code: str, expected_str: str) -> bool:
     return False
 
 
-def _extract_genuine_failing_assertion(log: str, triage: TriageRecord) -> Optional[str]:
-    """B1: Verify that the failure is from a test method (FAIL: test_*), not setUp/import/module,
+def _target_call_names(tree: ast.AST) -> set[str]:
+    """Names bound to non-stdlib (target repository) modules or their members."""
+    stdlib = set(getattr(sys, "stdlib_module_names", ())) | {"__future__"}
+    names: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+            if node.module.split(".")[0] not in stdlib:
+                names.update(alias.asname or alias.name for alias in node.names)
+        elif isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name.split(".")[0] not in stdlib:
+                    names.add(alias.asname or alias.name.split(".")[0])
+    return names
 
-    that the AssertionError originated inside a test_* method, and that triage.expected is in the failed comparison.
+
+def _call_base_name(func: ast.AST) -> Optional[str]:
+    while isinstance(func, ast.Attribute):
+        func = func.value
+    return func.id if isinstance(func, ast.Name) else None
+
+
+def _is_target_result(expr: ast.AST, target_names: set[str], tainted: set[str]) -> bool:
+    """True if `expr` is directly the result of a call to the target code (or a variable holding one)."""
+    if isinstance(expr, ast.Name):
+        return expr.id in tainted
+    if isinstance(expr, ast.Call):
+        base = _call_base_name(expr.func)
+        if base in target_names:
+            return True
+        if isinstance(expr.func, ast.Name) and expr.func.id in _CONVERSION_BUILTINS and expr.args:
+            return _is_target_result(expr.args[0], target_names, tainted)
+    return False
+
+
+def _constant_text(expr: ast.AST, constants: dict[str, str]) -> Optional[str]:
+    if isinstance(expr, ast.Constant):
+        return str(expr.value)
+    if isinstance(expr, ast.UnaryOp) and isinstance(expr.op, ast.USub) and isinstance(expr.operand, ast.Constant):
+        return f"-{expr.operand.value}"
+    if isinstance(expr, ast.Name):
+        return constants.get(expr.id)
+    return None
+
+
+def _failing_comparison_roles(
+    test_code: str, test_name: str, failing_line: int
+) -> Optional[tuple[bool, str]]:
+    """Return `(obtained_is_first_arg, expected_literal_text)` for the failing equality assertion.
+
+    The failing assertion must compare the RESULT of a call into the target code with a constant.
     """
-    fail_match = re.search(r"^FAIL:\s+(test_\w+)", log, re.MULTILINE)
+    try:
+        tree = ast.parse(test_code)
+    except SyntaxError:
+        return None
+    target_names = _target_call_names(tree)
+    for func in ast.walk(tree):
+        if not (isinstance(func, ast.FunctionDef) and func.name == test_name):
+            continue
+        tainted: set[str] = set()
+        constants: dict[str, str] = {}
+        for stmt in ast.walk(func):
+            if isinstance(stmt, ast.Assign) and len(stmt.targets) == 1 and isinstance(stmt.targets[0], ast.Name):
+                name = stmt.targets[0].id
+                if _is_target_result(stmt.value, target_names, tainted):
+                    tainted.add(name)
+                else:
+                    text = _constant_text(stmt.value, constants)
+                    if text is not None:
+                        constants[name] = text
+        for node in ast.walk(func):
+            if not (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr in _EQUALITY_ASSERTS
+                and len(node.args) >= 2
+            ):
+                continue
+            end_line = getattr(node, "end_lineno", node.lineno) or node.lineno
+            if not (node.lineno <= failing_line <= end_line):
+                continue
+            first, second = node.args[0], node.args[1]
+            first_target = _is_target_result(first, target_names, tainted)
+            second_target = _is_target_result(second, target_names, tainted)
+            if first_target == second_target:
+                return None
+            other = second if first_target else first
+            literal = _constant_text(other, constants)
+            if literal is None:
+                return None
+            return first_target, literal
+    return None
+
+
+def _split_unittest_sections(stderr: str) -> list[tuple[str, str, str, str]]:
+    """Return `(kind, test_name, header_detail, body)` for each FAIL/ERROR section of a unittest report."""
+    sections: list[tuple[str, str, str, str]] = []
+    for chunk in _SECTION_SPLIT_RE.split(stderr):
+        header = _SECTION_HEADER_RE.search(chunk)
+        if header is None:
+            continue
+        sections.append((header.group(1), header.group(2), header.group(3) or "", chunk))
+    return sections
+
+
+def _section_exception_type(body: str) -> Optional[str]:
+    matches = _EXCEPTION_LINE_RE.findall(body)
+    return matches[-1].split(".")[-1] if matches else None
+
+
+def _extract_genuine_failing_assertion(
+    section: str, triage: TriageRecord, test_code: Optional[str] = None
+) -> Optional[str]:
+    """B1: the failed assertion must be an equality check, inside a test_* method, between the result of a call
+    to the target code and the expected value, and the obtained value must be the one observed in the report."""
+    if test_code is None:
+        return None
+    fail_match = re.search(r"^FAIL:\s+(test_\w+)", section, re.MULTILINE)
     if not fail_match:
         return None
     test_method_name = fail_match.group(1)
 
-    fail_sections = re.split(r"={10,}", log)
-    target_section = ""
-    for sec in fail_sections:
-        if f"FAIL: {test_method_name}" in sec:
-            target_section = sec
-            break
-
-    if not target_section:
-        target_section = log
-
-    frame_matches = re.findall(r'File "([^"]+)", line \d+, in (\w+)', target_section)
+    frame_matches = re.findall(r'File "([^"]+)", line (\d+), in (\w+)', section)
     if not frame_matches:
         return None
-    _, last_func = frame_matches[-1]
-    if last_func == "<module>" or last_func == "setUp" or not last_func.startswith("test_"):
+    _, last_line, last_func = frame_matches[-1]
+    if last_func != test_method_name:
         return None
 
     assertion_line = ""
-    for line in target_section.splitlines():
+    for line in section.splitlines():
         stripped = line.strip()
-        if (
-            stripped.startswith("AssertionError:")
-            or stripped.startswith("assert ")
-            or "AssertionError" in stripped
-        ):
+        if stripped.startswith("AssertionError:") or "AssertionError" in stripped:
             assertion_line = stripped
-
     if not assertion_line:
         return None
 
-    exp_nums = _normalize_numbers(triage.expected)
-    if exp_nums:
-        assertion_nums = _normalize_numbers(assertion_line)
-        has_expected_in_comparison = any(
-            any(abs(en - an) < 1e-2 for an in assertion_nums) for en in exp_nums
-        )
-        if not has_expected_in_comparison:
-            has_expected_text = any(
-                str(int(en)) in assertion_line if en.is_integer() else f"{en:.2f}" in assertion_line
-                for en in exp_nums
-            )
-            if not has_expected_text:
-                return None
+    roles = _failing_comparison_roles(test_code, test_method_name, int(last_line))
+    if roles is None:
+        return None
+    obtained_is_first, expected_literal = roles
 
+    compare = _COMPARE_FAILURE_RE.search(assertion_line)
+    if compare is None:
+        return None
+    obtained_text = compare.group(1) if obtained_is_first else compare.group(2)
+    expected_text = compare.group(2) if obtained_is_first else compare.group(1)
+
+    def _overlaps(wanted: list[float], text: str) -> bool:
+        found = _normalize_numbers(text)
+        return any(abs(w - f) < 1e-2 for w in wanted for f in found)
+
+    exp_nums = _normalize_numbers(triage.expected)
+    if exp_nums and not (
+        _overlaps(exp_nums, expected_text) and _overlaps(exp_nums, expected_literal)
+    ):
+        return None
+    obs_nums = _normalize_numbers(triage.observed)
+    if obs_nums and not _overlaps(obs_nums, obtained_text):
+        return None
     return assertion_line
 
 
@@ -235,19 +352,22 @@ class ReproductionEngine:
                     continue
         return sources
 
-    def _execute_in_sandbox(self, case: RunState, test_code: str, test_rel_path: str) -> ExecResult:
-        """B2 & B5: Prepare isolated copy in tempfile.mkdtemp outside repo with test_code, and run it via self.sandbox.exec."""
+    def _execute_in_sandbox(
+        self, case: RunState, test_code: str, test_rel_path: str
+    ) -> tuple[ExecResult, Optional[str]]:
+        """Run `test_code` in an isolated copy outside the repo. Returns `(result, sandbox_error)`.
+
+        `sandbox_error` is set when the prepared copy could not be executed; there is NO fallback to the
+        original repository (B2).
+        """
         source_repo = (self.base_root / case.repo_ref).resolve()
         if not source_repo.is_relative_to(self.base_root) or not source_repo.is_dir():
-            return ExecResult(
-                exit_code=1,
-                stdout_ref="",
-                stderr_ref=f"Target repository {case.repo_ref!r} does not exist in {self.base_root}",
-                timed_out=False,
-            )
+            reason = f"Target repository {case.repo_ref!r} does not exist in {self.base_root}"
+            return ExecResult(exit_code=1, stdout_ref="", stderr_ref=reason, timed_out=False), reason
 
         temp_parent = Path(tempfile.mkdtemp(prefix="resolveqa_repro_"))
         stage_dir = temp_parent / Path(case.repo_ref).name
+        command = f"python3 -m unittest {test_rel_path}"
         try:
             shutil.copytree(
                 source_repo,
@@ -260,63 +380,60 @@ class ReproductionEngine:
             test_file.write_text(test_code, encoding="utf-8")
 
             local = _find_local_sandbox(self.sandbox)
-            if local is not None:
-                old_base = local.base_root
-                try:
-                    local.base_root = temp_parent
-                    return self.sandbox.exec(
-                        stage_dir.name,
-                        f"python3 -m unittest {test_rel_path}",
-                        timeout_s=self.timeout_s,
-                    )
-                finally:
-                    local.base_root = old_base
-            else:
-                try:
-                    return self.sandbox.exec(
-                        str(stage_dir),
-                        f"python3 -m unittest {test_rel_path}",
-                        timeout_s=self.timeout_s,
-                    )
-                except Exception:
-                    return self.sandbox.exec(
-                        stage_dir.name,
-                        f"python3 -m unittest {test_rel_path}",
-                        timeout_s=self.timeout_s,
-                    )
+            try:
+                if local is not None:
+                    old_base = local.base_root
+                    try:
+                        local.base_root = temp_parent
+                        res = self.sandbox.exec(stage_dir.name, command, timeout_s=self.timeout_s)
+                    finally:
+                        local.base_root = old_base
+                else:
+                    res = self.sandbox.exec(str(stage_dir), command, timeout_s=self.timeout_s)
+            except Exception as exc:  # sandbox refused the prepared copy: explicit env_error, no fallback
+                reason = f"Sandbox could not execute the prepared test copy: {type(exc).__name__}: {exc}"
+                return ExecResult(exit_code=2, stdout_ref="", stderr_ref=reason, timed_out=False), reason
+            return res, None
         finally:
             shutil.rmtree(temp_parent, ignore_errors=True)
 
     def _classify_outcome(
-        self, exec_res: ExecResult, triage: TriageRecord
+        self, exec_res: ExecResult, triage: TriageRecord, test_code: Optional[str] = None
     ) -> tuple[ReproOutcome, Optional[str]]:
-        """B1 & B3: Classify execution outcome.
+        """Classify by exit code first, then by exception TYPE and phase parsed from the unittest report.
 
-        - RED_ON_ASSERTION: Genuine assertion failure in a test_* method comparing against expected.
-        - GREEN: Test passed OR defect not reproduced (assertion not linked to expected, or target code exception TypeError/AttributeError/NameError).
-        - ENV_ERROR: Genuine environment/infrastructure errors (ImportError, syntax error, timeout, missing repo).
+        - ENV_ERROR: timeout, or the runner never produced a unittest report (e.g. sandbox refused the copy),
+          or load/collection failure, or an ImportError/SyntaxError-type exception.
+        - GREEN: exit 0 with a real unittest run, or defect not reproduced (target exception, unlinked assertion).
+        - RED_ON_ASSERTION: genuine equality failure of a target call result vs. the expected value.
         """
         if exec_res.timed_out:
             return (ReproOutcome.ENV_ERROR, None)
 
-        combined_log = f"{exec_res.stdout_ref}\n{exec_res.stderr_ref}"
-
-        # Check for genuine environment/import failures first
-        for marker in _GENUINE_ENV_ERROR_MARKERS:
-            if marker in combined_log:
-                return (ReproOutcome.ENV_ERROR, None)
+        report = exec_res.stderr_ref or ""
+        ran = _RAN_RE.search(report)
+        if ran is None:
+            # No unittest summary at all: the test never ran (sandbox/runner error), whatever the exit code.
+            return (ReproOutcome.ENV_ERROR, None)
 
         if exec_res.exit_code == 0:
             return (ReproOutcome.GREEN, None)
 
-        # B1: Check for genuine test assertion failure matching triage.expected
-        failing_assertion = _extract_genuine_failing_assertion(combined_log, triage)
-        if failing_assertion is not None:
-            return (ReproOutcome.RED_ON_ASSERTION, failing_assertion)
+        sections = _split_unittest_sections(report)
+        for _kind, _name, detail, _body in sections:
+            if "_FailedTest" in detail:
+                return (ReproOutcome.ENV_ERROR, None)  # import/collection phase
+        for kind, name, _detail, body in sections:
+            if kind == "ERROR" and name.startswith("test_") and _section_exception_type(body) in _ENV_EXCEPTION_TYPES:
+                return (ReproOutcome.ENV_ERROR, None)
+        for kind, _name, _detail, body in sections:
+            if kind != "FAIL":
+                continue
+            failing_assertion = _extract_genuine_failing_assertion(body, triage, test_code)
+            if failing_assertion is not None:
+                return (ReproOutcome.RED_ON_ASSERTION, failing_assertion)
 
-        # B3 DECISÃO DA EQUIPE:
-        # Asserção não ligada ao esperado e exceções de código-alvo (TypeError, AttributeError, NameError)
-        # NÃO são RED nem env_error: devolve GREEN ("não reproduzido") para o orquestrador bloquear com blocked/not_reproduced.
+        # B3 DECISÃO DA EQUIPE: asserção não ligada ao esperado e exceções do alvo => GREEN ("não reproduzido").
         return (ReproOutcome.GREEN, None)
 
     def run(self, case: RunState, triage: TriageRecord) -> ReproResult:
@@ -373,8 +490,11 @@ class ReproductionEngine:
             )
 
         test_rel_path = "tests/test_repro_generated.py"
-        exec_res = self._execute_in_sandbox(case, test_code, test_rel_path)
-        outcome, failing_assertion = self._classify_outcome(exec_res, triage)
+        exec_res, sandbox_error = self._execute_in_sandbox(case, test_code, test_rel_path)
+        if sandbox_error is not None:
+            outcome, failing_assertion = ReproOutcome.ENV_ERROR, None
+        else:
+            outcome, failing_assertion = self._classify_outcome(exec_res, triage, test_code)
 
         combined_log = (
             f"--- STDOUT ---\n{exec_res.stdout_ref}\n--- STDERR ---\n{exec_res.stderr_ref}\n"

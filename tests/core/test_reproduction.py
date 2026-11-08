@@ -290,5 +290,136 @@ class TestReproductionStage(unittest.TestCase):
             repro_b7.run(case, triage)
 
 
+_LEGIT_RED_CODE = (
+    "import unittest\n"
+    "from checkout import calculate_total\n\n"
+    "class TestLegit(unittest.TestCase):\n"
+    "    def test_coupon(self) -> None:\n"
+    "        self.assertEqual(calculate_total(200.0, coupon_percent=10.0), 180.0)\n"
+)
+
+
+class _RecordingSandbox:
+    """Sandbox double that records calls; optionally raises or returns a fixed ExecResult."""
+
+    def __init__(self, *, raises: Optional[Exception] = None, result: Optional[ExecResult] = None) -> None:
+        self.raises = raises
+        self.result = result
+        self.calls: list[tuple[str, str]] = []
+
+    def exec(self, repo_ref: str, command: str, env: Optional[dict[str, str]] = None, timeout_s: Optional[float] = None) -> ExecResult:
+        self.calls.append((repo_ref, command))
+        if self.raises is not None:
+            raise self.raises
+        assert self.result is not None
+        return self.result
+
+
+class TestReproductionQaAdjustments(unittest.TestCase):
+    """PR #50 adjustments B1, B2 and B3."""
+
+    def _run(self, code: Optional[str], sandbox: Any = None, case_id: str = "case-adj") -> ReproResult:
+        llm = LLMAdapter(response_override=code) if code is not None else LLMAdapter()
+        with tempfile.TemporaryDirectory() as tmp_runs:
+            repro = Reproduction(llm=llm, sandbox=sandbox or LocalSandbox(base_root=REPO_ROOT), runs_root=tmp_runs)
+            return repro.run(_make_case(case_id=case_id), _make_triage())
+
+    # B2
+    def test_b2a_sandbox_exception_is_env_error_and_never_runs_in_original_repo(self) -> None:
+        sandbox = _RecordingSandbox(raises=ValueError("Absolute paths are not allowed for workdir_ref"))
+        original_tests = REPO_ROOT / "demo-target" / "tests" / "test_repro_generated.py"
+        res = self._run(None, sandbox)
+        self.assertEqual(res.outcome, ReproOutcome.ENV_ERROR)
+        self.assertEqual(len(sandbox.calls), 1, "no fallback exec allowed")
+        self.assertTrue(all(Path(ref).is_absolute() for ref, _ in sandbox.calls))
+        self.assertNotIn("demo-target", [ref for ref, _ in sandbox.calls])
+        self.assertFalse(original_tests.exists())
+
+    def test_b2b_sandbox_error_result_is_env_error_not_green(self) -> None:
+        sandbox = _RecordingSandbox(
+            result=ExecResult(exit_code=2, stdout_ref="", stderr_ref="Absolute paths are not allowed for workdir_ref", timed_out=False)
+        )
+        res = self._run(None, sandbox)
+        self.assertEqual(res.outcome, ReproOutcome.ENV_ERROR)
+        self.assertEqual(len(sandbox.calls), 1)
+
+    # B1
+    def test_b1_len_and_asserttrue_with_expected_text_are_not_red(self) -> None:
+        len_code = (
+            "import unittest\nfrom checkout import calculate_total\n\n"
+            "class T(unittest.TestCase):\n"
+            "    def test_len(self) -> None:\n"
+            "        self.assertEqual(len('abc'), 180)\n"
+        )
+        true_code = (
+            "import unittest\nfrom checkout import calculate_total\n\n"
+            "class T(unittest.TestCase):\n"
+            "    def test_true(self) -> None:\n"
+            "        self.assertTrue(False, 'esperado 180')\n"
+            "        self.assertEqual(calculate_total, calculate_total)  # 180\n"
+        )
+        for label, code in (("len", len_code), ("asserttrue", true_code)):
+            with self.subTest(case=label):
+                res = self._run(code, case_id=f"case-b1-{label}")
+                self.assertNotEqual(res.outcome, ReproOutcome.RED_ON_ASSERTION)
+                self.assertEqual(res.outcome, ReproOutcome.GREEN)
+
+    def test_b1_target_result_not_matching_reported_observed_is_not_red(self) -> None:
+        code = _LEGIT_RED_CODE.replace("calculate_total(200.0, coupon_percent=10.0)", "calculate_total(100.0)")
+        res = self._run(code, case_id="case-b1-obs")
+        self.assertEqual(res.outcome, ReproOutcome.GREEN)
+
+    def test_b1_legitimate_red_keeps_working(self) -> None:
+        res = self._run(_LEGIT_RED_CODE, case_id="case-b1-legit")
+        self.assertEqual(res.outcome, ReproOutcome.RED_ON_ASSERTION)
+        assert res.failing_assertion is not None
+        self.assertIn("200.0 != 180.0", res.failing_assertion)
+        res_default = self._run(None, case_id="case-b1-default")
+        self.assertEqual(res_default.outcome, ReproOutcome.RED_ON_ASSERTION)
+
+    # B3
+    def test_b3_target_exception_message_with_env_words_is_not_env_error(self) -> None:
+        code = (
+            "import unittest\nfrom checkout import calculate_total\n\n"
+            "class T(unittest.TestCase):\n"
+            "    def test_x(self) -> None:\n"
+            "        self.assertEqual(180, 180)\n"
+            "        raise ValueError('coupon DESC10 does not exist')\n"
+        )
+        res = self._run(code, case_id="case-b3-msg")
+        self.assertEqual(res.outcome, ReproOutcome.GREEN)
+
+    def test_b3_green_test_printing_env_words_stays_green(self) -> None:
+        code = (
+            "import unittest\nfrom checkout import calculate_total\n\n"
+            "class T(unittest.TestCase):\n"
+            "    def test_x(self) -> None:\n"
+            "        print('ImportError: does not exist; No such file or directory')\n"
+            "        self.assertEqual(180, 180)\n"
+        )
+        res = self._run(code, case_id="case-b3-green")
+        self.assertEqual(res.outcome, ReproOutcome.GREEN)
+        self.assertEqual(res.exit_code, 0)
+
+    def test_b3_import_errors_by_type_and_phase_are_env_error(self) -> None:
+        import_code = (
+            "import unittest\nimport module_that_is_not_there\n\n"
+            "class T(unittest.TestCase):\n"
+            "    def test_x(self) -> None:\n"
+            "        self.assertEqual(180, 180)\n"
+        )
+        lazy_import_code = (
+            "import unittest\n\n"
+            "class T(unittest.TestCase):\n"
+            "    def test_x(self) -> None:\n"
+            "        self.assertEqual(180, 180)\n"
+            "        import module_that_is_not_there\n"
+        )
+        for label, code in (("import", import_code), ("lazy", lazy_import_code)):
+            with self.subTest(case=label):
+                res = self._run(code, case_id=f"case-b3-{label}")
+                self.assertEqual(res.outcome, ReproOutcome.ENV_ERROR)
+
+
 if __name__ == "__main__":
     unittest.main()
