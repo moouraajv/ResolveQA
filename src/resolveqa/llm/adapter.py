@@ -506,16 +506,36 @@ def _require_delimited_untrusted_messages(
         )
 
 
+class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Refuse all HTTP 3xx redirects so Authorization headers are never forwarded to another host/URL."""
+
+    def redirect_request(self, req: Any, fp: Any, code: int, msg: str, headers: Any, newurl: str) -> None:
+        raise urllib.error.HTTPError(
+            req.full_url,
+            code,
+            f"HTTP redirect ({code}) is forbidden on Featherless transport",
+            headers,
+            fp,
+        )
+
+
 def default_featherless_transport(
     url: str,
     headers: dict[str, str],
     body: bytes,
     timeout_s: float,
 ) -> dict[str, Any]:
-    """Perform an OpenAI-compatible POST request using Python standard library `urllib.request`."""
-    req = urllib.request.Request(url=url, data=body, headers=headers, method="POST")
+    """Perform an OpenAI-compatible POST request using `urllib.request` with redirects disabled."""
+    req = urllib.request.Request(url=url, data=body, headers=dict(headers), method="POST")
+    opener = urllib.request.build_opener(_NoRedirectHandler())
     try:
-        with urllib.request.urlopen(req, timeout=timeout_s) as resp:
+        with opener.open(req, timeout=timeout_s) as resp:
+            status = getattr(resp, "status", getattr(resp, "code", 200))
+            if 300 <= int(status) < 400:
+                raise FeatherlessHTTPError(
+                    status_code=int(status),
+                    message=f"Featherless HTTP {status}: redirects are forbidden",
+                )
             raw_bytes = resp.read()
             text = raw_bytes.decode("utf-8", errors="replace")
             return json.loads(text)
