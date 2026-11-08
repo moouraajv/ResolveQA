@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
+from typing import Any
 
 from resolveqa.contracts import (
+    Attempts,
     BlockedReason,
     BlockedTerminalReason,
     CaseState,
@@ -37,34 +40,83 @@ def validate_case_id(case_id: str) -> str:
     return case_id
 
 
+def encode_blocked_event_reason(
+    terminal_reason: BlockedTerminalReason,
+    attempts: Attempts | None = None,
+) -> str:
+    """Serialize blocked terminal reason (+ optional attempts) into Event.reason."""
+    payload: dict[str, Any] = {"code": terminal_reason.code.value}
+    if terminal_reason.detail is not None:
+        payload["detail"] = terminal_reason.detail
+    if attempts is not None:
+        payload["attempts"] = {
+            "fix": int(attempts.fix),
+            "llm_calls": int(attempts.llm_calls),
+        }
+    if set(payload) == {"code"}:
+        return terminal_reason.code.value
+    return json.dumps(payload, sort_keys=True)
+
+
+def decode_blocked_event_reason(
+    reason: str,
+) -> tuple[BlockedTerminalReason, Attempts | None]:
+    """Parse Event.reason back into BlockedTerminalReason and optional Attempts."""
+    text = reason.strip()
+    if text.startswith("{"):
+        try:
+            data = json.loads(text)
+        except json.JSONDecodeError as err:
+            raise EventStoreError(f"Invalid blocked event reason JSON: {err}") from err
+        if not isinstance(data, dict) or "code" not in data:
+            raise EventStoreError("Blocked event reason JSON must include 'code'")
+        attempts = None
+        raw_attempts = data.get("attempts")
+        if raw_attempts is not None:
+            if not isinstance(raw_attempts, dict):
+                raise EventStoreError("Blocked event reason attempts must be an object")
+            attempts = Attempts(
+                fix=int(raw_attempts["fix"]),
+                llm_calls=int(raw_attempts["llm_calls"]),
+            )
+        return (
+            BlockedTerminalReason(code=data["code"], detail=data.get("detail")),
+            attempts,
+        )
+    return BlockedTerminalReason(code=BlockedReason(text)), None
+
+
 def terminal_reason_from_event(
     to_state: CaseState,
     reason: str | None,
-) -> TerminalReason | None:
-    """Rebuild a structured terminal reason from a StateChanged reason string."""
+) -> tuple[TerminalReason | None, Attempts | None]:
+    """Rebuild structured terminal reason (and optional attempts) from Event.reason."""
     if to_state == CaseState.VERIFIED:
-        return None
+        return None, None
     if to_state not in TERMINAL_STATES:
-        return None
+        return None, None
     if reason is None or not reason.strip():
         raise EventStoreError(
             f"StateChanged to {to_state.value} requires a non-empty reason for reconstruction"
         )
     if to_state == CaseState.BLOCKED:
-        return BlockedTerminalReason(code=BlockedReason(reason))
+        return decode_blocked_event_reason(reason)
     if to_state == CaseState.NEEDS_INFO:
-        return NeedsInfoTerminalReason(question_to_support=reason)
+        return NeedsInfoTerminalReason(question_to_support=reason), None
     if to_state == CaseState.INFRA_ERROR:
-        return InfraErrorTerminalReason(detail=reason)
+        return InfraErrorTerminalReason(detail=reason), None
     raise EventStoreError(f"Unhandled terminal state for reconstruction: {to_state.value}")
 
 
-def reason_for_terminal(terminal_reason: TerminalReason | None) -> str | None:
+def reason_for_terminal(
+    terminal_reason: TerminalReason | None,
+    attempts: Attempts | None = None,
+) -> str | None:
     """Serialize a structured terminal reason into Event.reason."""
     if terminal_reason is None:
         return None
     if isinstance(terminal_reason, BlockedTerminalReason):
-        return terminal_reason.code.value
+        return encode_blocked_event_reason(terminal_reason, attempts=attempts)
     if isinstance(terminal_reason, NeedsInfoTerminalReason):
         return terminal_reason.question_to_support
     if isinstance(terminal_reason, InfraErrorTerminalReason):
@@ -184,6 +236,26 @@ class EventStore:
             )
         current = base
         for event in self.list_events(base.case_id):
+            if event.type == EventType.LIMIT_REACHED and event.reason:
+                # LimitReached may carry attempts/detail before the terminal StateChanged.
+                _terminal, attempts = decode_blocked_event_reason(event.reason)
+                if attempts is not None:
+                    current = RunState(
+                        case_id=current.case_id,
+                        client_id=current.client_id,
+                        repo_ref=current.repo_ref,
+                        channel=current.channel,
+                        report_text=current.report_text,
+                        state=current.state,
+                        created_at=current.created_at,
+                        updated_at=event.ts,
+                        terminal_reason=current.terminal_reason,
+                        attempts=attempts,
+                        base_revision=current.base_revision,
+                        fix_revision=current.fix_revision,
+                        evidence_ids=current.evidence_ids,
+                    )
+                continue
             if event.type != EventType.STATE_CHANGED:
                 continue
             if event.from_state != current.state:
@@ -193,11 +265,28 @@ class EventStore:
                 )
             assert event.to_state is not None
             terminal = None
+            attempts = None
             if event.to_state in TERMINAL_STATES and event.to_state != CaseState.VERIFIED:
-                terminal = terminal_reason_from_event(event.to_state, event.reason)
+                terminal, attempts = terminal_reason_from_event(event.to_state, event.reason)
             current = current.transition_to(
                 event.to_state,
                 updated_at=event.ts,
                 terminal_reason=terminal,
             )
+            if attempts is not None:
+                current = RunState(
+                    case_id=current.case_id,
+                    client_id=current.client_id,
+                    repo_ref=current.repo_ref,
+                    channel=current.channel,
+                    report_text=current.report_text,
+                    state=current.state,
+                    created_at=current.created_at,
+                    updated_at=current.updated_at,
+                    terminal_reason=current.terminal_reason,
+                    attempts=attempts,
+                    base_revision=current.base_revision,
+                    fix_revision=current.fix_revision,
+                    evidence_ids=current.evidence_ids,
+                )
         return current
