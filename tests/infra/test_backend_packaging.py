@@ -155,7 +155,7 @@ class BackendPackagingValidationTest(unittest.TestCase):
                     f"{path.name} must not contain local user home paths",
                 )
                 self.assertIsNone(
-                    re.search(r"~/.local", text),
+                    re.search(r"~/\.local", text),
                     f"{path.name} must not contain local user tool paths",
                 )
                 self.assertIsNone(
