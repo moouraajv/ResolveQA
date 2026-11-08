@@ -8,6 +8,7 @@ Routes (ephemeral / local-demo; no auth, no cloud):
   GET  /api/cases/<case_id>/timeline -> JSON timeline from runs/<case_id>/events.jsonl (#15)
   GET  /cases/<case_id>/timeline     -> HTML timeline for support (#15)
   POST /api/cases/<case_id>/reply    -> JSON customer reply compose (#17)
+  POST /api/cases/<case_id>/delivery -> build local unpublished evidence package (#16)
   POST /form/cases             -> application/x-www-form-urlencoded create channel=form
   GET  /chat                   -> simulated messaging UI (permanent "Canal simulado" label)
   POST /chat/messages          -> form create via Intake channel=simulated_chat
@@ -37,15 +38,19 @@ from resolveqa.contracts import (
     Event,
     ReportInput,
     RunState,
+    Verdict,
 )
 from resolveqa.intake import Intake
+from resolveqa.delivery import DeliveryBuilder, DeliveryError
 from resolveqa.reply import ReplyComposeError, ReplyComposer, ReplyOutcome
+from resolveqa.store import EventStore, EventStoreError
 from resolveqa.timeline import TimelineError, build_timeline_html, load_timeline, timeline_to_dict
 
 _CASE_ID_RE = re.compile(r"^/api/cases/([^/]+)$")
 _CASE_TIMELINE_API_RE = re.compile(r"^/api/cases/([^/]+)/timeline$")
 _CASE_TIMELINE_HTML_RE = re.compile(r"^/cases/([^/]+)/timeline$")
 _CASE_REPLY_API_RE = re.compile(r"^/api/cases/([^/]+)/reply$")
+_CASE_DELIVERY_API_RE = re.compile(r"^/api/cases/([^/]+)/delivery$")
 _DEFAULT_RUNS_ROOT = Path("runs")
 
 
@@ -226,12 +231,30 @@ class IntakeRequestHandler(BaseHTTPRequestHandler):
             self._handle_reply_api(reply_api.group(1), raw)
             return
 
+        delivery_api = _CASE_DELIVERY_API_RE.match(path)
+        if delivery_api:
+            self._handle_delivery_api(delivery_api.group(1), raw)
+            return
+
         status, body, ctype = _error("not found", HTTPStatus.NOT_FOUND)
         self._write(status, body, ctype)
 
+    def _load_timeline_entries(self, case_id: str):
+        """Prefer EventStore when available; fall back to timeline reader."""
+        try:
+            store = EventStore(self.server.runs_root)
+            events = store.list_events(case_id)
+            # Project through timeline reader for stable labels/replay handling.
+            path = Path(self.server.runs_root) / case_id / "events.jsonl"
+            if events and not path.exists():
+                raise TimelineError("events listed by store but events.jsonl missing")
+            return load_timeline(self.server.runs_root, case_id)
+        except EventStoreError as err:
+            raise TimelineError(str(err)) from err
+
     def _handle_timeline_api(self, case_id: str) -> None:
         try:
-            entries = load_timeline(self.server.runs_root, case_id)
+            entries = self._load_timeline_entries(case_id)
         except TimelineError as err:
             status, body, ctype = _error(str(err))
             self._write(status, body, ctype)
@@ -241,7 +264,7 @@ class IntakeRequestHandler(BaseHTTPRequestHandler):
 
     def _handle_timeline_html(self, case_id: str) -> None:
         try:
-            entries = load_timeline(self.server.runs_root, case_id)
+            entries = self._load_timeline_entries(case_id)
         except TimelineError as err:
             page = (
                 "<!DOCTYPE html><html lang=\"pt-BR\"><body>"
@@ -331,6 +354,62 @@ class IntakeRequestHandler(BaseHTTPRequestHandler):
                 "message": message.to_dict(),
                 "note": "Mensagem composta apenas após regras RF-09; não inventa progresso.",
             }
+        )
+        self._write(status, body, ctype)
+
+    def _handle_delivery_api(self, case_id: str, raw: bytes) -> None:
+        case = self.intake.get(case_id)
+        if case is None:
+            status, body, ctype = _error(f"case_id not found: {case_id}", HTTPStatus.NOT_FOUND)
+            self._write(status, body, ctype)
+            return
+
+        if not raw:
+            status, body, ctype = _error("JSON body with verdict is required")
+            self._write(status, body, ctype)
+            return
+        try:
+            payload = json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            status, body, ctype = _error("invalid JSON body")
+            self._write(status, body, ctype)
+            return
+        if not isinstance(payload, dict) or "verdict" not in payload:
+            status, body, ctype = _error("JSON body must include 'verdict'")
+            self._write(status, body, ctype)
+            return
+
+        try:
+            verdict = Verdict.from_dict(payload["verdict"])
+            # Allow demo callers to present a verified case snapshot without mutating Intake store.
+            if isinstance(payload.get("state"), str) and payload["state"].strip():
+                case = RunState(
+                    case_id=case.case_id,
+                    client_id=case.client_id,
+                    repo_ref=case.repo_ref,
+                    channel=case.channel,
+                    report_text=case.report_text,
+                    state=CaseState(payload["state"]),
+                    created_at=case.created_at,
+                    updated_at=case.updated_at,
+                    terminal_reason=case.terminal_reason,
+                    attempts=case.attempts,
+                    base_revision=payload.get("base_revision", case.base_revision),
+                    fix_revision=payload.get("fix_revision", case.fix_revision),
+                    evidence_ids=case.evidence_ids,
+                )
+            result = self.server.delivery_builder.build(case, verdict)
+        except (ContractValidationError, DeliveryError, ValueError) as err:
+            status, body, ctype = _error(str(err))
+            self._write(status, body, ctype)
+            return
+
+        status, body, ctype = _json_bytes(
+            {
+                "delivery": result.to_dict(),
+                "note": "Pacote local 'PR não publicado'; sem merge automático.",
+            },
+            status=HTTPStatus.CREATED,
         )
         self._write(status, body, ctype)
 
@@ -530,10 +609,16 @@ class IntakeHTTPServer(ThreadingHTTPServer):
         *,
         runs_root: Path | str | None = None,
         reply_composer: ReplyComposer | None = None,
+        delivery_builder: DeliveryBuilder | None = None,
     ) -> None:
         self.intake = intake if intake is not None else Intake()
         self.runs_root = Path(runs_root) if runs_root is not None else _DEFAULT_RUNS_ROOT
         self.reply_composer = reply_composer if reply_composer is not None else ReplyComposer()
+        self.delivery_builder = (
+            delivery_builder
+            if delivery_builder is not None
+            else DeliveryBuilder(runs_root=self.runs_root)
+        )
         super().__init__(server_address, IntakeRequestHandler)
 
 
