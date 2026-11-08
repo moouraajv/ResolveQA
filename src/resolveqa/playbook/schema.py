@@ -9,6 +9,7 @@ import fnmatch
 from dataclasses import dataclass, field
 from enum import Enum
 import posixpath
+import re
 from typing import Any
 
 
@@ -57,10 +58,22 @@ BASELINE_LIMITS = {
 DEFAULT_PROTECTED_TESTS = (
     ".resolveqa/playbook.toml",
     ".resolveqa/**",
+    ".github/**",
+    ".gitlab-ci.yml",
     "tests/**",
     "test_*.py",
+    "**/test_*.py",
     "*_test.py",
+    "**/*_test.py",
     "conftest.py",
+    "**/conftest.py",
+    "pyproject.toml",
+    "pytest.toml",
+    ".pytest.toml",
+    ".pytest.ini",
+    "pytest.ini",
+    "setup.cfg",
+    "tox.ini",
 )
 
 DEFAULT_FORBIDDEN_PATHS = (
@@ -68,6 +81,16 @@ DEFAULT_FORBIDDEN_PATHS = (
     ".resolveqa/**",
     ".git/**",
     ".github/**",
+    ".gitlab-ci.yml",
+    "pyproject.toml",
+    "pytest.toml",
+    ".pytest.toml",
+    ".pytest.ini",
+    "pytest.ini",
+    "setup.cfg",
+    "tox.ini",
+    "conftest.py",
+    "**/conftest.py",
 )
 
 
@@ -148,16 +171,40 @@ class DocsConfig:
         }
 
 
-def _matches_any_glob(path: str, patterns: tuple[str, ...]) -> bool:
-    norm = posixpath.normpath(path.strip().replace("\\", "/")).lstrip("./")
+_DRIVE_LETTER_RE = re.compile(r"^[a-zA-Z]:")
+
+
+def _is_rejected_path(path: str) -> bool:
+    """Return True if path contains absolute path, drive letter, backslash, or '..' traversal."""
+    if not isinstance(path, str) or not path.strip():
+        return True
+    if "\\" in path:
+        return True
+    raw = path.strip()
+    if raw.startswith("/"):
+        return True
+    if _DRIVE_LETTER_RE.match(raw):
+        return True
+    parts = raw.split("/")
+    if any(p == ".." for p in parts):
+        return True
+    return False
+
+
+def _matches_any_glob(path: str, patterns: tuple[str, ...], match_basename: bool = True) -> bool:
+    norm = posixpath.normpath(path.strip()).removeprefix("./")
+    while norm.startswith("./"):
+        norm = norm.removeprefix("./")
     basename = posixpath.basename(norm)
     for pat in patterns:
-        norm_pat = posixpath.normpath(pat.replace("\\", "/")).lstrip("./")
+        norm_pat = posixpath.normpath(pat.replace("\\", "/")).removeprefix("./")
+        while norm_pat.startswith("./"):
+            norm_pat = norm_pat.removeprefix("./")
         if fnmatch.fnmatch(norm, norm_pat):
             return True
-        if fnmatch.fnmatch(basename, norm_pat):
+        if match_basename and fnmatch.fnmatch(basename, norm_pat):
             return True
-        if not norm_pat.startswith("**/") and fnmatch.fnmatch(norm, f"**/{norm_pat}"):
+        if match_basename and not norm_pat.startswith("**/") and fnmatch.fnmatch(norm, f"**/{norm_pat}"):
             return True
         if norm_pat.endswith("/**") and norm == norm_pat[:-3]:
             return True
@@ -225,23 +272,33 @@ class Playbook:
 
     def is_path_allowed(self, path: str) -> bool:
         """Return True if path matches paths.allowed and is not in paths.forbidden."""
+        if _is_rejected_path(path):
+            return False
         if self.is_path_forbidden(path):
             return False
-        return _matches_any_glob(path, self.paths.allowed)
+        return _matches_any_glob(path, self.paths.allowed, match_basename=False)
 
     def is_path_forbidden(self, path: str) -> bool:
         """Return True if path matches paths.forbidden or is internal resolveqa configuration."""
-        norm = posixpath.normpath(path.strip().replace("\\", "/")).lstrip("./")
+        if _is_rejected_path(path):
+            return True
+        norm = posixpath.normpath(path.strip()).removeprefix("./")
+        while norm.startswith("./"):
+            norm = norm.removeprefix("./")
         if norm == ".resolveqa/playbook.toml" or norm.startswith(".resolveqa/"):
             return True
-        return _matches_any_glob(path, self.paths.forbidden)
+        return _matches_any_glob(path, self.paths.forbidden, match_basename=True)
 
     def is_test_protected(self, path: str) -> bool:
         """Return True if path matches any protected test pattern."""
-        norm = posixpath.normpath(path.strip().replace("\\", "/")).lstrip("./")
+        if _is_rejected_path(path):
+            return False
+        norm = posixpath.normpath(path.strip()).removeprefix("./")
+        while norm.startswith("./"):
+            norm = norm.removeprefix("./")
         if norm == ".resolveqa/playbook.toml" or norm.startswith(".resolveqa/"):
             return True
-        return _matches_any_glob(path, self.tests.protected)
+        return _matches_any_glob(path, self.tests.protected, match_basename=True)
 
     def to_dict(self) -> dict[str, Any]:
         return {

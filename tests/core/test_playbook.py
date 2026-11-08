@@ -324,6 +324,156 @@ class TestPlaybookLoader(unittest.TestCase):
             self.assertEqual(pb.reply_max_chars, 200)
             self.assertEqual(pb.changelog_path, "CHANGES.md")
 
+    # ==========================================================================
+    # QA Adjustments Tests (Issue #22 - PR #57: P1, P2, P3, P4, P5, P7)
+    # ==========================================================================
+
+    def test_p1_rejects_unsafe_paths_in_allowed_and_forbidden(self) -> None:
+        """P1: Rejeita caminho absoluto, letra de unidade, barra invertida e '..'."""
+        pb = Playbook.create_default()  # allowed=['**']
+        unsafe_paths = [
+            "/etc/passwd",
+            "../fora.py",
+            "../../home/x/.ssh/id_rsa",
+            "C:/x.py",
+            "foo\\bar.py",
+            "a/../b.py",
+        ]
+        for bad_path in unsafe_paths:
+            with self.subTest(path=bad_path):
+                self.assertFalse(
+                    pb.is_path_allowed(bad_path),
+                    f"is_path_allowed must be False for unsafe path: {bad_path}",
+                )
+                self.assertTrue(
+                    pb.is_path_forbidden(bad_path),
+                    f"is_path_forbidden must be True for unsafe path: {bad_path}",
+                )
+
+    def test_p2_removeprefix_no_false_positives(self) -> None:
+        """P2: removeprefix('./') não gera falsos positivos em resolveqa/ e github/."""
+        pb = Playbook.create_default()
+        # resolveqa/legit.py and github/legit.py must not be forbidden/protected
+        self.assertFalse(pb.is_path_forbidden("resolveqa/legit.py"))
+        self.assertFalse(pb.is_test_protected("resolveqa/legit.py"))
+        self.assertTrue(pb.is_path_allowed("resolveqa/legit.py"))
+
+        self.assertFalse(pb.is_path_forbidden("github/legit.py"))
+        self.assertTrue(pb.is_path_allowed("github/legit.py"))
+
+        # Genuine .resolveqa and .github files must still be forbidden
+        self.assertTrue(pb.is_path_forbidden(".resolveqa/playbook.toml"))
+        self.assertTrue(pb.is_test_protected(".resolveqa/playbook.toml"))
+        self.assertFalse(pb.is_path_allowed(".resolveqa/playbook.toml"))
+
+        self.assertTrue(pb.is_path_forbidden(".github/workflows/ci.yml"))
+        self.assertFalse(pb.is_path_allowed(".github/workflows/ci.yml"))
+
+    def test_p3_runner_and_ci_configs_in_default_protected_and_forbidden(self) -> None:
+        """P3: DEFAULT_FORBIDDEN_PATHS e DEFAULT_PROTECTED_TESTS incluem runner e CI."""
+        expected_configs = [
+            "pyproject.toml",
+            "pytest.toml",
+            ".pytest.toml",
+            ".pytest.ini",
+            "pytest.ini",
+            "setup.cfg",
+            "tox.ini",
+            "conftest.py",
+            "**/conftest.py",
+            ".github/**",
+            ".gitlab-ci.yml",
+        ]
+        for cfg in expected_configs:
+            with self.subTest(config=cfg):
+                self.assertIn(cfg, DEFAULT_FORBIDDEN_PATHS)
+                self.assertIn(cfg, DEFAULT_PROTECTED_TESTS)
+
+        pb = Playbook.create_default()
+        test_files = [
+            "pyproject.toml",
+            "pytest.toml",
+            ".pytest.toml",
+            ".pytest.ini",
+            "pytest.ini",
+            "setup.cfg",
+            "tox.ini",
+            "conftest.py",
+            "tests/conftest.py",
+            "sub/nested/conftest.py",
+            ".gitlab-ci.yml",
+        ]
+        for target in test_files:
+            with self.subTest(file=target):
+                self.assertTrue(
+                    pb.is_path_forbidden(target),
+                    f"{target} must be forbidden by default",
+                )
+                self.assertTrue(
+                    pb.is_test_protected(target),
+                    f"{target} must be protected by default",
+                )
+                self.assertFalse(
+                    pb.is_path_allowed(target),
+                    f"{target} must not be allowed by default",
+                )
+
+    def test_p4_allowed_matches_full_relative_path_not_basename(self) -> None:
+        """P4: allowed casa pelo caminho relativo completo, não pelo basename."""
+        pb = parse_playbook_dict({"paths": {"allowed": ["checkout.py"]}})
+        self.assertTrue(pb.is_path_allowed("checkout.py"))
+        self.assertTrue(pb.is_path_allowed("./checkout.py"))
+        self.assertFalse(
+            pb.is_path_allowed("evil/checkout.py"),
+            "evil/checkout.py must not match allowed=['checkout.py'] by basename",
+        )
+        self.assertFalse(
+            pb.is_path_allowed("sub/checkout.py"),
+            "sub/checkout.py must not match allowed=['checkout.py']",
+        )
+
+    def test_p5_rejects_string_version_and_nested_approvers_without_mutation(self) -> None:
+        """P5: version='1' (string) é recusado e [tests] approvers é recusado sem mutar dict."""
+        # 1. version as string must be rejected
+        with self.assertRaises(PlaybookError) as ctx:
+            parse_playbook_dict({"version": "1"})
+        self.assertEqual(ctx.exception.field, "version")
+
+        # 2. [tests] approvers must be rejected and input dict must not be mutated
+        input_data = {
+            "tests": {
+                "protected": ["tests/**"],
+                "approvers": ["alice", "bob"],
+            }
+        }
+        with self.assertRaises(PlaybookError) as ctx2:
+            parse_playbook_dict(input_data)
+        self.assertEqual(ctx2.exception.field, "tests.approvers")
+        # Ensure input_data was NOT mutated
+        self.assertNotIn("approvers", input_data)
+        self.assertIn("approvers", input_data["tests"])
+        self.assertEqual(input_data["tests"]["approvers"], ["alice", "bob"])
+
+    def test_p7_load_playbook_restricts_paths_to_repo_or_config(self) -> None:
+        """P7: load_playbook(path) é restrito ao repositório-alvo ou a config/."""
+        # Reading outside files must be refused
+        with self.assertRaises(PlaybookError):
+            load_playbook("/etc/passwd")
+
+        with self.assertRaises(PlaybookError):
+            load_playbook("../../../etc/passwd")
+
+        with self.assertRaises(PlaybookError):
+            load_playbook("/etc")
+
+        # Loading within repo, config, or demo-target must succeed
+        pb_demo = load_playbook("config/playbook.demo.json")
+        self.assertFalse(pb_demo.is_default)
+        self.assertEqual(pb_demo.reply_tone, ReplyTone.FRIENDLY)
+
+        pb_repo = load_playbook(DEMO_TARGET_DIR)
+        self.assertFalse(pb_repo.is_default)
+
 
 if __name__ == "__main__":
     unittest.main()
