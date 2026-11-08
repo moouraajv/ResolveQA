@@ -1,31 +1,47 @@
-"""LLM adapter package with deterministic mock (Issue #8, RFC-0001 §3.3, §6.2, §9 D3)."""
+"""LLM adapter package with Featherless provider and deterministic mock fallback (Issue #8)."""
 
 from .adapter import (
     ALLOWED_PURPOSES,
-     DEFAULT_LIMITS_PATH,
+    DEFAULT_LIMITS_PATH,
     INERT_DATA_SYSTEM_NOTICE,
+    PURPOSE_PROMPT_GUIDELINES,
     DeterministicMockLLM,
+    FeatherlessHTTPError,
     LLMAdapter,
     LLMLimitExceededError,
     LLMOutputError,
+    LLMProviderError,
     build_delimited_messages,
+    default_featherless_transport,
     delimit_untrusted_data,
+    load_featherless_api_key,
     load_max_llm_calls,
-    record_llm_calls_in_state,
+     record_llm_calls_in_state,
+    redact_secrets,
     validate_llm_output,
 )
+from .config import DEFAULT_LLM_CONFIG_PATH, LLMConfig, load_llm_config
 
 __all__ = [
     "ALLOWED_PURPOSES",
     "DEFAULT_LIMITS_PATH",
+    "DEFAULT_LLM_CONFIG_PATH",
     "DeterministicMockLLM",
+    "FeatherlessHTTPError",
     "INERT_DATA_SYSTEM_NOTICE",
     "LLMAdapter",
+    "LLMConfig",
     "LLMLimitExceededError",
     "LLMOutputError",
+    "LLMProviderError",
+    "PURPOSE_PROMPT_GUIDELINES",
     "build_delimited_messages",
+    "default_featherless_transport",
     "delimit_untrusted_data",
+    "load_featherless_api_key",
+    "load_llm_config",
     "load_max_llm_calls",
     "record_llm_calls_in_state",
+    "redact_secrets",
     "validate_llm_output",
 ]
