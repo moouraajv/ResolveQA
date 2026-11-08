@@ -181,15 +181,19 @@ def main() -> None:
     args = parser.parse_args()
 
     target, digest, size_bytes = build_bundle(args.output, reject_dirty=not args.allow_dirty)
+    try:
+        display_target = target.resolve().relative_to(REPO_ROOT.resolve()).as_posix()
+    except ValueError:
+        display_target = str(target)
 
     print("=" * 70)
     print("ResolveQA Backend Deterministic Deployment Bundle Created")
-    print(f"File:    {target}")
+    print(f"File:    {display_target}")
     print(f"Size:    {size_bytes} bytes")
     print(f"SHA-256: {digest}")
     print("=" * 70)
-    print("Upload instructions (when authorized):")
-    print(f"  aws s3 cp {target} s3://<ArtifactBucket>/<ArtifactKey> ")
+    print("Upload instructions (when authorized; uses standard AWS credential chain):")
+    print(f"  aws s3 cp {display_target} s3://<ArtifactBucket>/<ArtifactKey>")
     print("-" * 70)
     print("CloudFormation parameter snippet:")
     print(f"  ParameterKey=ArtifactSha256,ParameterValue={digest}")

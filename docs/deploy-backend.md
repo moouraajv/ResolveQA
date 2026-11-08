@@ -18,7 +18,7 @@ Este documento detalha a arquitetura, modelo de custos, segurança de rede e pro
 
 ## 2. Avaliação de Opções de Arquitetura AWS
 
-Durante a investigação técnica na conta `<AWS_ACCOUNT_ID>` (perfil AWS configurado, região `us-east-1`), avaliamos quatro alternativas de implantação:
+Durante a investigação técnica na conta AWS `<AWS_ACCOUNT_ID>` (região `us-east-1`), avaliamos quatro alternativas de implantação:
 
 | Critério | Opção 1: EC2 ARM64 + CloudFront HTTPS (Escolhida) | Opção 2: AWS App Runner | Opção 3: ECS Fargate + ALB | Opção 4: AWS Lambda + Function URL |
 | :--- | :--- | :--- | :--- | :--- |
@@ -35,7 +35,7 @@ Durante a investigação técnica na conta `<AWS_ACCOUNT_ID>` (perfil AWS config
 2. **Inviabilidade do Modelo Serverless para Store Efêmero**: No AWS Lambda, execuções concorrentes ou reciclagem de contêineres criam ambientes isolados. Uma requisição `POST /api/cases` criaria um caso na memória de uma instância que não existiria na chamada subsequente `GET /api/cases/<id>`. Além disso, a biblioteca padrão pura (`http.server`) não roda nativamente no Lambda sem dependências externas (como Mangum ou AWSGI).
 3. **Custo e Complexidade do ECS/ALB**: O Application Load Balancer cobra uma taxa fixa de ~$16.20/mês apenas para existir ocioso, além de exigir certificado ACM com domínio público registrado em DNS e compilação/envio de imagem Docker para o ECR (inviabilizado pelo bloqueio de socket do daemon local).
 4. **Vantagens do EC2 Graviton ARM64 + CloudFront**:
-   - Uma única instância (`t4g.nano`) rodando um processo contínuo com [`ProtectedIntakeHTTPServer`](file://.orchestration/ResolveQA/worktrees/backend-aws/scripts/run_server.py) assegura que todos os endpoints operem sobre a mesma instância em memória do [`EphemeralCaseStore`](file://.orchestration/ResolveQA/worktrees/backend-aws/src/resolveqa/intake/store.py).
+   - Uma única instância (`t4g.nano`) rodando um processo contínuo com [`ProtectedIntakeHTTPServer`](../scripts/run_server.py) assegura que todos os endpoints operem sobre a mesma instância em memória do [`EphemeralCaseStore`](../src/resolveqa/intake/store.py).
    - O CloudFront gerencia a terminação TLS publicamente em `https://dXXXXXXXX.cloudfront.net` sem requerer domínio próprio.
    - O deploy não depende do Git `main` (que é docs-only), mas de um artefato empacotado e auditado com SHA-256 via S3 e IAM mínimo.
 
@@ -106,7 +106,7 @@ Internet / Usuário
 2. **Camada de Aplicação (ProtectedIntakeRequestHandler)**:
    - `scripts/run_server.py` implementa `ProtectedIntakeRequestHandler`, que intercepta todas as requisições (`GET`, `POST`).
    - Se o token no cabeçalho `X-ResolveQA-Origin-Verify` não for fornecido ou for inválido, responde com `HTTP 403 Forbidden` (`{"error": "forbidden: missing or invalid origin verification header"}`).
-   - O segredo é gerado externamente com entropia criptográfica (`secrets.token_hex(32)`) e passado via parâmetro `OriginSecretHeader` com `NoEcho: true`.
+   - O segredo é gerado externamente com entropia criptográfica (`secrets.token_hex(32)`), armazenado em arquivo de parâmetros com permissão `0600` e carregado na instância via `/etc/resolveqa/backend.env` (`chmod 600`) sem exposição em `argv`.
 
 ---
 
@@ -116,9 +116,9 @@ Internet / Usuário
 A branch `main` oficial do repositório (`moouraajv/ResolveQA`) é atualmente docs-only (`e8ef46f`), não possuindo o código implementado nem `scripts/run_server.py`. Fazer `git clone main` em UserData causaria falha silenciosa de inicialização.
 
 Em vez disso:
-1. O script [`scripts/package_bundle.py`](file://.orchestration/ResolveQA/worktrees/backend-aws/scripts/package_bundle.py) empacota `src/` e `scripts/` em `dist/resolveqa-bundle.tar.gz` e calcula seu SHA-256;
+1. O script [`scripts/package_bundle.py`](../scripts/package_bundle.py) empacota `src/` e `scripts/` de forma determinística (rejeitando working tree dirty por padrão) em `dist/resolveqa-bundle.tar.gz` e calcula seu SHA-256;
 2. O artefato é enviado a um bucket S3 privado;
-3. A instância EC2 assume o perfil IAM mínimo [`BackendInstanceRole`](file://.orchestration/ResolveQA/worktrees/backend-aws/infra/aws/template.yaml), com permissão exclusiva `s3:GetObject` sobre o objeto;
+3. A instância EC2 assume o perfil IAM mínimo [`BackendInstanceRole`](../infra/aws/template.yaml), com permissão exclusiva `s3:GetObject` sobre o objeto;
 4. O `UserData` baixa o tarball e executa `echo "${ArtifactSha256} /tmp/resolveqa-bundle.tar.gz" | sha256sum -c -` antes da extração.
 
 ### 5.2 Validação de Prontidão (CreationPolicy + cfn-signal)
@@ -132,10 +132,10 @@ O template CloudFormation define uma `CreationPolicy` com timeout de 5 minutos n
 
 ## 6. Procedimento de Deploy e Verificação (Dry-Run e Execução)
 
-O script [`scripts/deploy_dry_run.sh`](file://.orchestration/ResolveQA/worktrees/backend-aws/scripts/deploy_dry_run.sh) automatiza as etapas prévias sem disparar mutações de nuvem:
+O script [`scripts/deploy_dry_run.sh`](../scripts/deploy_dry_run.sh) atua como gerador de artefatos e comandos em modo dry-run (sem disparar mutações de nuvem), utilizando a cadeia de credenciais padrão da AWS CLI (configurável via `AWS_PROFILE` e `AWS_REGION`):
 
 ```bash
-# 1. Empacotar artefato e validar template sem mutações
+# 1. Empacotar artefato (requer árvore limpa), gerar parâmetros (chmod 600) e validar template
 ./scripts/deploy_dry_run.sh <NOME_DO_BUCKET> resolveqa-demo-backend demo <VPC_ID> <SUBNET_ID>
 ```
 
@@ -143,34 +143,27 @@ O script [`scripts/deploy_dry_run.sh`](file://.orchestration/ResolveQA/worktrees
 ```bash
 # A. Upload do bundle versionado para o S3
 aws s3 cp dist/resolveqa-bundle.tar.gz s3://<NOME_DO_BUCKET>/builds/resolveqa-bundle-<SHA12>.tar.gz \
-   --region us-east-1
+  --region "${AWS_REGION:-us-east-1}"
 
-# B. Criação da stack no CloudFormation
+# B. Criação da stack no CloudFormation (referenciando arquivo de parâmetros chmod 600)
 aws cloudformation create-stack \
   --stack-name resolveqa-demo-backend \
   --template-body file://infra/aws/template.yaml \
-  --parameters \
-      ParameterKey=EnvironmentName,ParameterValue=demo \
-      ParameterKey=InstanceType,ParameterValue=t4g.nano \
-      ParameterKey=VpcId,ParameterValue=<VPC_ID> \
-      ParameterKey=SubnetId,ParameterValue=<SUBNET_ID> \
-      ParameterKey=ArtifactBucket,ParameterValue=<NOME_DO_BUCKET> \
-      ParameterKey=ArtifactKey,ParameterValue=builds/resolveqa-bundle-<SHA12>.tar.gz \
-      ParameterKey=ArtifactSha256,ParameterValue=<SHA256_INTEGRAL> \
-      ParameterKey=OriginSecretHeader,ParameterValue=<SEGREDO_HEX_32> \
+  --parameters file://dist/parameters-demo.json \
   --capabilities CAPABILITY_IAM \
-   --region us-east-1
+  --region "${AWS_REGION:-us-east-1}"
 
 # C. Aguardar prontidão (bloqueia até o cfn-signal emitir HTTP 200 OK)
 aws cloudformation wait stack-create-complete \
   --stack-name resolveqa-demo-backend \
-   --region us-east-1
+  --region "${AWS_REGION:-us-east-1}"
 
-# D. Execução dos smoke tests contra o endpoint público CloudFront
+# D. Execução dos smoke tests contra o endpoint público CloudFront HTTPS
+# (O CloudFront injeta automaticamente o header X-ResolveQA-Origin-Verify na origem)
 CLOUDFRONT_URL=$(aws cloudformation describe-stacks \
   --stack-name resolveqa-demo-backend \
   --query "Stacks[0].Outputs[?OutputKey=='CloudFrontBaseUrl'].OutputValue" \
-  --output text  --region us-east-1)
+  --output text --region "${AWS_REGION:-us-east-1}")
 
-python3 scripts/smoke_test.py --base-url "${CLOUDFRONT_URL}" --origin-secret "<SEGREDO_HEX_32>"
+python3 scripts/smoke_test.py --base-url "${CLOUDFRONT_URL}"
 ```

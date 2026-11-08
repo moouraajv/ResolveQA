@@ -120,6 +120,48 @@ class BackendPackagingValidationTest(unittest.TestCase):
         self.assertNotIn("usuário proibiu assinaturas", doc)
         self.assertIn("IPv4 Público", doc)
         self.assertIn("pl-3b927c52", doc)
+        self.assertIn("<AWS_ACCOUNT_ID>", doc)
+
+    def test_security_hygiene_no_account_ids_or_local_paths(self) -> None:
+        checked_files = [
+            DOCKERFILE_PATH,
+            DOCKERIGNORE_PATH,
+            TEMPLATE_PATH,
+            DEPLOY_DOC_PATH,
+            RUN_SERVER_SCRIPT,
+            SMOKE_TEST_SCRIPT,
+            PACKAGE_BUNDLE_SCRIPT,
+            DEPLOY_DRY_RUN_SCRIPT,
+            REPO_ROOT / "scripts" / "validate_template.sh",
+            Path(__file__).resolve(),
+        ]
+        for path in checked_files:
+            with self.subTest(file=path.name):
+                text = path.read_text(encoding="utf-8")
+                self.assertIsNone(
+                    re.search(r"\b\d{12}\b", text),
+                    f"{path.name} must not contain a 12-digit AWS account ID",
+                )
+                self.assertIsNone(
+                    re.search(r"--profile\s+[A-Za-z0-9_-]+", text),
+                    f"{path.name} must not hardcode a named AWS CLI profile",
+                )
+                self.assertIsNone(
+                    re.search(r"/(?:home|Users)/[A-Za-z0-9_.-]+", text),
+                    f"{path.name} must not contain local user home paths",
+                )
+                self.assertIsNone(
+                    re.search(r"file:/{3}", text),
+                    f"{path.name} must not contain absolute file URI links",
+                )
+
+        # deploy_dry_run.sh must use clean build by default (no --allow-dirty)
+        dry_run_text = DEPLOY_DRY_RUN_SCRIPT.read_text(encoding="utf-8")
+        self.assertNotIn(
+            "--allow-dirty",
+            dry_run_text,
+            "deploy_dry_run.sh must enforce clean bundle build by default",
+        )
 
 
 class LocalServerRuntimeAndOriginSecurityTest(unittest.TestCase):
@@ -236,6 +278,28 @@ class LocalServerRuntimeAndOriginSecurityTest(unittest.TestCase):
                 manifest_data = json.loads(manifest_file.read().decode("utf-8"))
                 self.assertIn("commit_sha", manifest_data)
                 self.assertIn("components", manifest_data)
+
+            # Verify reject_dirty=True rejects uncommitted edits in src/ or scripts/
+            fake_repo = tmp / "fake_repo"
+            (fake_repo / "src").mkdir(parents=True)
+            (fake_repo / "scripts").mkdir(parents=True)
+            sample_file = fake_repo / "src" / "app.py"
+            sample_file.write_text("x = 1\n", encoding="utf-8")
+            subprocess.run(["git", "init"], cwd=fake_repo, check=True, capture_output=True)
+            subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=fake_repo, check=True, capture_output=True)
+            subprocess.run(["git", "config", "user.name", "Test"], cwd=fake_repo, check=True, capture_output=True)
+            subprocess.run(["git", "add", "."], cwd=fake_repo, check=True, capture_output=True)
+            subprocess.run(["git", "commit", "-m", "init"], cwd=fake_repo, check=True, capture_output=True)
+
+            # Clean build succeeds
+            clean_out = tmp / "clean.tar.gz"
+            package_bundle.build_bundle(clean_out, repo_root=fake_repo, reject_dirty=True)
+            self.assertTrue(clean_out.is_file())
+
+            # Dirty edit in src/ is rejected when reject_dirty=True
+            sample_file.write_text("x = 2\n", encoding="utf-8")
+            with self.assertRaises(ValueError):
+                package_bundle.build_bundle(tmp / "dirty.tar.gz", repo_root=fake_repo, reject_dirty=True)
 
     def test_deploy_dry_run_parameters_and_redaction(self) -> None:
         # Run deploy_dry_run.sh and verify it exits 0 without printing secrets

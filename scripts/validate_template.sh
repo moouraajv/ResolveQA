@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Validate CloudFormation template syntax and schema
+# Validate CloudFormation template syntax and schema.
+# Uses standard AWS credential chain (respects AWS_PROFILE and AWS_REGION).
 # Does NOT mutate or deploy cloud resources.
 
 set -euo pipefail
@@ -9,42 +10,59 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 TEMPLATE_FILE="${REPO_ROOT}/infra/aws/template.yaml"
 
 if [ ! -f "${TEMPLATE_FILE}" ]; then
-  echo "[ERROR] Template file not found: ${TEMPLATE_FILE}" >&2
+  echo "[ERROR] Template file not found: infra/aws/template.yaml" >&2
   exit 1
 fi
 
-echo "[Validate] Checking template file existence and non-emptiness: ${TEMPLATE_FILE}"
+echo "[Validate] Checking template file existence and non-emptiness: infra/aws/template.yaml"
 if [ ! -s "${TEMPLATE_FILE}" ]; then
-  echo "[ERROR] Template file is empty: ${TEMPLATE_FILE}" >&2
+  echo "[ERROR] Template file is empty: infra/aws/template.yaml" >&2
   exit 1
 fi
 
-# Locate AWS CLI
+# Basic local structural sanity checks
+for section in "AWSTemplateFormatVersion" "Parameters:" "Resources:" "Outputs:"; do
+  if ! grep -q "${section}" "${TEMPLATE_FILE}"; then
+    echo "[ERROR] Template missing required section '${section}'" >&2
+    exit 1
+  fi
+done
+
+# Locate AWS CLI via standard PATH
 AWS_BIN=""
 if command -v aws >/dev/null 2>&1; then
   AWS_BIN="$(command -v aws)"
-elif [ -x "<LOCAL_HOME>/.local/bin/aws" ]; then
-  AWS_BIN="<LOCAL_HOME>/.local/bin/aws"
 fi
 
 if [ -n "${AWS_BIN}" ]; then
-  echo "[Validate] Running '${AWS_BIN} cloudformation validate-template' (read-only syntax/schema check)..."
-  PROFILE_ARG=()
-  if "${AWS_BIN}" configure list-profiles 2>/dev/null | grep -q "^<AWS_PROFILE>$"; then
-    PROFILE_ARG=( --region us-east-1)
+  AWS_ARGS=(--region "${AWS_REGION:-us-east-1}")
+  if [ -n "${AWS_PROFILE:-}" ]; then
+    AWS_ARGS+=(--profile "${AWS_PROFILE}")
   fi
 
-  VALIDATE_OUTPUT="$("${AWS_BIN}" cloudformation validate-template \
-    --template-body "file://${TEMPLATE_FILE}" \
-    "${PROFILE_ARG[@]}" 2>&1)" || {
-      echo "[ERROR] CloudFormation validation failed:" >&2
-      echo "${VALIDATE_OUTPUT}" >&2
-      exit 1
-    }
+  if "${AWS_BIN}" sts get-caller-identity "${AWS_ARGS[@]}" >/dev/null 2>&1; then
+    echo "[Validate] Running 'aws cloudformation validate-template' (read-only syntax/schema check)..."
+    VALIDATE_OUTPUT="$("${AWS_BIN}" cloudformation validate-template \
+      --template-body "file://${TEMPLATE_FILE}" \
+      "${AWS_ARGS[@]}" 2>&1)" || {
+        echo "[ERROR] CloudFormation validation failed:" >&2
+        echo "${VALIDATE_OUTPUT}" >&2
+        exit 1
+      }
 
-  echo "[Validate] CloudFormation API validation PASSED:"
-  echo "${VALIDATE_OUTPUT}"
+    echo "[Validate] CloudFormation API validation PASSED:"
+    echo "${VALIDATE_OUTPUT}"
+  elif [ "${REQUIRE_AWS_VALIDATION:-0}" = "1" ]; then
+    echo "[ERROR] Active AWS credentials required (REQUIRE_AWS_VALIDATION=1) but credential chain failed." >&2
+    exit 1
+  else
+    echo "[WARN] No active AWS credentials in standard chain (set AWS_PROFILE or credentials for online check); skipping online API validation."
+  fi
 else
+  if [ "${REQUIRE_AWS_VALIDATION:-0}" = "1" ]; then
+    echo "[ERROR] aws CLI not found in PATH (REQUIRE_AWS_VALIDATION=1)." >&2
+    exit 1
+  fi
   echo "[WARN] aws CLI not found in PATH; skipping online CloudFormation API validation."
 fi
 
