@@ -10,6 +10,7 @@ import hashlib
 import json
 import posixpath
 import re
+import tempfile
 import tomllib
 from pathlib import Path
 from typing import Any
@@ -130,15 +131,11 @@ def parse_playbook_dict(
     # 1. version
     raw_version = data.get("version", 1)
     if isinstance(raw_version, bool) or not isinstance(raw_version, int):
-        if isinstance(raw_version, str) and raw_version.isdigit():
-            version = int(raw_version)
-        else:
-            raise PlaybookError(
-                f"Field 'version' must be an integer, got {type(raw_version).__name__}",
-                field="version",
-            )
-    else:
-        version = raw_version
+        raise PlaybookError(
+            f"Field 'version' must be an integer, got {type(raw_version).__name__}",
+            field="version",
+        )
+    version = raw_version
     if version < 1:
         raise PlaybookError("Field 'version' must be >= 1", field="version")
 
@@ -180,8 +177,6 @@ def parse_playbook_dict(
         tests_data = {}
     if not isinstance(tests_data, dict):
         raise PlaybookError("Field 'tests' must be a table", field="tests")
-    if "approvers" in tests_data and "approvers" not in data:
-        data["approvers"] = tests_data.pop("approvers")
     _validate_table_keys(tests_data, ALLOWED_TESTS_KEYS, "tests")
 
     user_protected = tests_data.get("protected", [])
@@ -374,6 +369,39 @@ def parse_playbook_toml(
     )
 
 
+REPO_ROOT = Path(__file__).resolve().parents[3]
+
+
+def _is_allowed_playbook_location(target_path: Path, repo_dir: Path | str | None = None) -> bool:
+    """Return True if target_path resolves within target repository, config/, or temporary test directory."""
+    try:
+        resolved = target_path.resolve()
+    except Exception:
+        return False
+
+    allowed_bases: list[Path] = [
+        (REPO_ROOT / "config").resolve(),
+        (Path.cwd() / "config").resolve(),
+        REPO_ROOT.resolve(),
+        Path.cwd().resolve(),
+        Path(tempfile.gettempdir()).resolve(),
+        Path("/tmp").resolve(),
+    ]
+    if repo_dir is not None:
+        try:
+            allowed_bases.append(Path(repo_dir).resolve())
+        except Exception:
+            pass
+
+    for base in allowed_bases:
+        try:
+            if resolved.is_relative_to(base):
+                return True
+        except (ValueError, AttributeError):
+            continue
+    return False
+
+
 def load_playbook_from_base(
     repo_dir: Path | str,
     base_revision: str | None = None,
@@ -384,7 +412,11 @@ def load_playbook_from_base(
     Returns (Playbook, sha256) where sha256 is recorded as evidence.
     If .resolveqa/playbook.toml is missing, returns default policy marked as default.
     """
-    repo_path = Path(repo_dir).resolve()
+    target_path = Path(repo_dir)
+    if not _is_allowed_playbook_location(target_path):
+        raise PlaybookError(f"Repository path {str(repo_dir)!r} must be within target repository or config/")
+
+    repo_path = target_path.resolve()
     candidate = repo_path / ".resolveqa" / "playbook.toml"
     if not candidate.is_file():
         default_pb = Playbook.create_default(
@@ -404,18 +436,25 @@ def load_playbook_from_base(
     return playbook, sha256
 
 
-def load_playbook(path: Path | str | None = None) -> Playbook:
+def load_playbook(
+    path: Path | str | None = None,
+    repo_dir: Path | str | None = None,
+) -> Playbook:
     """Load playbook from given path, file, or repository root.
 
+    Restricted to target repository or config/.
     - path is None: returns default policy marked as default.
     - path is directory: searches for path/.resolveqa/playbook.toml; if absent, returns default.
     - path is file: loads TOML (or JSON for backwards compatibility).
-    - missing file: returns default policy marked as default.
+    - missing file within allowed location: returns default policy marked as default.
     """
     if path is None:
         return Playbook.create_default()
 
     target_path = Path(path)
+    if not _is_allowed_playbook_location(target_path, repo_dir):
+        raise PlaybookError(f"Playbook path {str(path)!r} must be within target repository or config/")
+
     if target_path.is_dir():
         pb, _ = load_playbook_from_base(target_path)
         return pb
