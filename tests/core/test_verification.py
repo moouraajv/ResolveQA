@@ -22,7 +22,7 @@ from resolveqa.contracts import (
 )
 from resolveqa.sandbox import LocalSandbox
 from resolveqa.verification import Verification, Verifier
-from resolveqa.verification.verifier import apply_unified_diff
+from resolveqa.verification.verifier import RESIDUAL_RISK_NOTE, apply_unified_diff
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEMO_TARGET_DIR = REPO_ROOT / "demo-target"
@@ -163,7 +163,7 @@ class TestVerificationStage(unittest.TestCase):
             self.assertFalse(protected_file.exists())
 
     def test_implements_verification_stage_protocol(self) -> None:
-        verifier = Verification(base_root=REPO_ROOT)
+        verifier = Verification(allow_inline_test_source=True, base_root=REPO_ROOT)
         self.assertIsInstance(verifier, VerificationStage)
         self.assertIs(Verifier, Verification)
 
@@ -171,7 +171,7 @@ class TestVerificationStage(unittest.TestCase):
         checkout_path = DEMO_TARGET_DIR / "checkout.py"
         original_sha = hashlib.sha256(checkout_path.read_bytes()).hexdigest()
 
-        verifier = Verification(base_root=REPO_ROOT)
+        verifier = Verification(allow_inline_test_source=True, base_root=REPO_ROOT)
         case = _make_case()
         repro = _make_repro()
         patch = Patch(
@@ -186,7 +186,7 @@ class TestVerificationStage(unittest.TestCase):
             verdict = verifier.run(case, repro, patch)
 
         self.assertEqual(verdict.result, VerdictResult.VERIFIED, f"Reasons: {verdict.reasons}")
-        self.assertEqual(verdict.reasons, ())
+        self.assertEqual(verdict.reasons, (RESIDUAL_RISK_NOTE,))
         self.assertNotEqual(verdict.before.exit_code, 0)
         self.assertIn("AssertionError", verdict.before.log_ref)
         self.assertEqual(verdict.after.exit_code, 0)
@@ -214,7 +214,7 @@ class TestVerificationStage(unittest.TestCase):
 +        self.assertEqual(total, 200.0)
 """
         )
-        verifier = Verification(base_root=REPO_ROOT)
+        verifier = Verification(allow_inline_test_source=True, base_root=REPO_ROOT)
         # Even if Patch metadata lies (touches_tests=False and omits test from files_changed),
         # Verification must catch the sha256 mismatch and test tampering.
         lying_patch = Patch(
@@ -258,7 +258,7 @@ class TestVerificationStage(unittest.TestCase):
 -if __name__ == "__main__":
 -    unittest.main()
 """
-        verifier = Verification(base_root=REPO_ROOT)
+        verifier = Verification(allow_inline_test_source=True, base_root=REPO_ROOT)
         patch = Patch(
             diff_ref=deleting_diff,
             files_changed=("checkout.py",),
@@ -290,7 +290,7 @@ class TestVerificationStage(unittest.TestCase):
          total = calculate_total(200.0, coupon_percent=10.0)
          self.assertEqual(total, 180.0)
 """
-        verifier = Verification(base_root=REPO_ROOT)
+        verifier = Verification(allow_inline_test_source=True, base_root=REPO_ROOT)
         patch = Patch(
             diff_ref=skip_diff,
             files_changed=("checkout.py",),
@@ -332,7 +332,7 @@ class TestWeak(unittest.TestCase):
 def test_trivial():
     assert True
 """
-        verifier = Verification(base_root=REPO_ROOT)
+        verifier = Verification(allow_inline_test_source=True, base_root=REPO_ROOT)
         good_patch = Patch(diff_ref=VALID_CHECKOUT_PATCH_DIFF, files_changed=("checkout.py",))
 
         for name, bad_test in [("no_assert", no_assert_test), ("tautological", tautological_test)]:
@@ -342,7 +342,7 @@ def test_trivial():
                 self.assertIn("assertion", " ".join(verdict.reasons).lower())
 
     def test_rejects_patch_touching_ci_or_runner_configuration(self) -> None:
-        verifier = Verification(base_root=REPO_ROOT)
+        verifier = Verification(allow_inline_test_source=True, base_root=REPO_ROOT)
         # Flagged via touches_ci=True
         ci_flag_patch = Patch(
             diff_ref=VALID_CHECKOUT_PATCH_DIFF,
@@ -378,7 +378,7 @@ def test_trivial():
         self.assertIn("runner_config_modified", " ".join(v2.reasons).lower())
 
     def test_rejects_patch_exceeding_max_files_changed(self) -> None:
-        verifier = Verification(base_root=REPO_ROOT, max_files_changed=3)
+        verifier = Verification(allow_inline_test_source=True, base_root=REPO_ROOT, max_files_changed=3)
         patch = Patch(
             diff_ref=VALID_CHECKOUT_PATCH_DIFF,
             files_changed=("checkout.py", "a.py", "b.py", "c.py"),
@@ -390,7 +390,7 @@ def test_trivial():
         self.assertIn("max_files_changed", " ".join(verdict.reasons).lower())
 
     def test_rejects_wrong_fix_and_suite_breaking_fix(self) -> None:
-        verifier = Verification(base_root=REPO_ROOT)
+        verifier = Verification(allow_inline_test_source=True, base_root=REPO_ROOT)
         # Wrong fix: reproduction test still fails after patch
         wrong_patch = Patch(
             diff_ref=WRONG_FIX_PATCH_DIFF,
@@ -411,7 +411,7 @@ def test_trivial():
         self.assertNotEqual(v_suite.suite.exit_code, 0)
 
     def test_import_collection_and_setup_errors_do_not_count_as_valid_red(self) -> None:
-        verifier = Verification(base_root=REPO_ROOT)
+        verifier = Verification(allow_inline_test_source=True, base_root=REPO_ROOT)
         good_patch = Patch(diff_ref=VALID_CHECKOUT_PATCH_DIFF, files_changed=("checkout.py",))
 
         import_error_test = """\
@@ -486,7 +486,7 @@ def test_coupon():
 -    return round(float(subtotal), 2)
 +    return round(float(subtotal) - discount, 2)
 """
-        verifier = Verification(base_root=REPO_ROOT, test_timeout_s=0.3)
+        verifier = Verification(allow_inline_test_source=True, base_root=REPO_ROOT, test_timeout_s=0.3)
         timeout_patch = Patch(
             diff_ref=timeout_patch_diff,
             files_changed=("checkout.py",),
@@ -510,6 +510,176 @@ def test_coupon():
             Patch(diff_ref=VALID_CHECKOUT_PATCH_DIFF, files_changed=("checkout.py",)),
         )
         self.assertEqual(v_repro_env.result, VerdictResult.ENV_ERROR)
+
+
+def _new_file_diff(path: str, body: str) -> str:
+    lines = body.splitlines()
+    return (
+        f"--- /dev/null\n+++ b/{path}\n@@ -0,0 +1,{len(lines)} @@\n"
+        + "".join(f"+{line}\n" for line in lines)
+    )
+
+
+QA_HOOKS_SOURCE = """\
+mod = __import__('pyt' + 'est')
+
+
+def pytest_runtest_makereport(item, call):
+    return None
+"""
+
+
+class TestVerifierHardening(unittest.TestCase):
+    """Regression tests for QA findings V7/V8 (X1), X2, X3, X4/X5 on PR #53."""
+
+    def setUp(self) -> None:
+        self.verifier = Verification(allow_inline_test_source=True, base_root=REPO_ROOT)
+
+    def _run(self, diff: str, files: tuple[str, ...], repro: ReproResult | None = None):
+        return self.verifier.run(
+            _make_case(), repro or _make_repro(), Patch(diff_ref=diff, files_changed=files)
+        )
+
+    def _assert_rejected(self, verdict, *needles: str) -> None:
+        self.assertEqual(verdict.result, VerdictResult.REJECTED, verdict.reasons)
+        text = " ".join(verdict.reasons)
+        for needle in needles:
+            self.assertIn(needle, text)
+
+    def test_v7_v8_pytest_config_files_are_protected_at_any_level(self) -> None:
+        for name in ("pytest.toml", ".pytest.toml", ".pytest.ini", "sub/pytest.toml", "unittest.cfg", "sitecustomize.py"):
+            with self.subTest(config=name):
+                diff = VALID_CHECKOUT_PATCH_DIFF + _new_file_diff(name, "[pytest]\naddopts = -p qa_hooks")
+                verdict = self._run(diff, ("checkout.py", name))
+                self._assert_rejected(verdict, "runner_config_modified")
+
+    def test_v7_v8_full_qa_exploit_is_rejected_and_never_verified(self) -> None:
+        # QA proof: pytest.toml/.pytest.ini with addopts '-p qa_hooks' + hook module + unfixed checkout.py.
+        unfixed = (
+            "--- a/checkout.py\n+++ b/checkout.py\n@@ -1,3 +1,3 @@\n"
+            ' """Checkout pricing module for order totals and promotional coupons."""\n'
+            " \n"
+            "-from __future__ import annotations\n"
+            "+from __future__ import annotations  # touched, bug NOT fixed\n"
+        )
+        diff = (
+            unfixed
+            + _new_file_diff("pytest.toml", "[pytest]\naddopts = '-p qa_hooks'")
+            + _new_file_diff(".pytest.ini", "[pytest]\naddopts = -p qa_hooks")
+            + _new_file_diff("qa_hooks.py", QA_HOOKS_SOURCE)
+        )
+        verdict = self._run(diff, ("checkout.py", "pytest.toml", ".pytest.ini"))
+        self.assertNotEqual(verdict.result, VerdictResult.VERIFIED)
+        self._assert_rejected(verdict, "runner_config_modified")
+
+    def test_new_python_files_and_pytest_hooks_are_rejected_in_patch(self) -> None:
+        diff = VALID_CHECKOUT_PATCH_DIFF + _new_file_diff("qa_hooks.py", QA_HOOKS_SOURCE)
+        verdict = self._run(diff, ("checkout.py", "qa_hooks.py"))
+        self._assert_rejected(verdict, "new file 'qa_hooks.py'", "pytest_")
+
+        hook_diff = (
+            VALID_CHECKOUT_PATCH_DIFF.replace(
+                "+    return round(float(subtotal) - discount, 2)",
+                "+    import pytest\n+    hookimpl = pytest_runtest_call = None\n+    return round(float(subtotal) - discount, 2)",
+            )
+        )
+        verdict = self._run(hook_diff, ("checkout.py",))
+        self._assert_rejected(verdict, "forbidden pytest hook")
+
+    def test_dynamic_import_in_patch_is_rejected(self) -> None:
+        diff = VALID_CHECKOUT_PATCH_DIFF.replace(
+            "+    return round(float(subtotal) - discount, 2)",
+            "+    __import__('pyt' + 'est')\n+    return round(float(subtotal) - discount, 2)",
+        )
+        self._assert_rejected(self._run(diff, ("checkout.py",)), "dynamic import")
+
+    def test_runner_uses_fixed_configuration_command(self) -> None:
+        verdict = self._run(VALID_CHECKOUT_PATCH_DIFF, ("checkout.py",))
+        self.assertEqual(verdict.result, VerdictResult.VERIFIED, verdict.reasons)
+        for run in (verdict.before, verdict.after, verdict.suite):
+            self.assertIn("PYTEST_DISABLE_PLUGIN_AUTOLOAD=1", run.command)
+            self.assertIn("-c .rqa_verifier_pytest.ini", run.command)
+            self.assertIn("addopts=", run.command)
+            self.assertIn("no:cacheprovider", run.command)
+        self.assertIn(RESIDUAL_RISK_NOTE, verdict.reasons)
+
+    def test_workspace_pytest_config_cannot_influence_runs(self) -> None:
+        with tempfile.TemporaryDirectory(dir=REPO_ROOT) as tmp:
+            repo = Path(tmp) / "target"
+            (repo / "tests").mkdir(parents=True)
+            (repo / "checkout.py").write_text((DEMO_TARGET_DIR / "checkout.py").read_text(), encoding="utf-8")
+            (repo / "tests" / "__init__.py").write_text("", encoding="utf-8")
+            # Hostile config already present in the workspace: would deselect everything.
+            (repo / "pytest.toml").write_text("[pytest]\naddopts = '-k nothing_matches'\n", encoding="utf-8")
+            verifier = Verification(allow_inline_test_source=True, base_root=Path(tmp))
+            repo_ref = "target"
+            case = _make_case(repo_ref=repo_ref)
+            verdict = verifier.run(
+                case, _make_repro(), Patch(diff_ref=VALID_CHECKOUT_PATCH_DIFF, files_changed=("checkout.py",))
+            )
+            self.assertEqual(verdict.result, VerdictResult.VERIFIED, verdict.reasons)
+
+    def test_x2_red_must_use_the_value_reported(self) -> None:
+        other_value_test = """\
+import unittest
+from checkout import calculate_total
+
+
+class TestOther(unittest.TestCase):
+    def test_fifty_percent_on_100(self) -> None:
+        self.assertEqual(calculate_total(100.0, coupon_percent=50.0), 50.0)
+"""
+        verdict = self._run(
+            VALID_CHECKOUT_PATCH_DIFF,
+            ("checkout.py",),
+            _make_repro(test_source=other_value_test),
+        )
+        self._assert_rejected(verdict, "does not contain the reported value")
+
+    def test_x2_requires_failing_assertion_and_failure_from_test_function(self) -> None:
+        verdict = self._run(
+            VALID_CHECKOUT_PATCH_DIFF, ("checkout.py",), _make_repro(failing_assertion=None)
+        )
+        self._assert_rejected(verdict, "failing_assertion")
+
+    def test_x3_rejects_eq_hash_and_value_subclasses(self) -> None:
+        eq_diff = VALID_CHECKOUT_PATCH_DIFF.replace(
+            "+    return round(float(subtotal) - discount, 2)",
+            "+    class _Any(float):\n+        def __eq__(self, other):\n+            return True\n"
+            "+    return _Any(200.0)",
+        )
+        self._assert_rejected(self._run(eq_diff, ("checkout.py",)), "value_type_spoofing")
+
+    def test_x3_after_requires_exact_returned_type(self) -> None:
+        int_diff = VALID_CHECKOUT_PATCH_DIFF.replace(
+            "+    return round(float(subtotal) - discount, 2)",
+            "+    return int(round(float(subtotal) - discount))",
+        )
+        verdict = self._run(int_diff, ("checkout.py",))
+        self.assertNotEqual(verdict.result, VerdictResult.VERIFIED)
+        self.assertIn("RQA_TYPE_MISMATCH", verdict.after.log_ref)
+
+    def test_x4_inline_source_and_foreign_absolute_paths_are_refused_by_default(self) -> None:
+        strict = Verification(base_root=REPO_ROOT)
+        verdict = strict.run(
+            _make_case(), _make_repro(), Patch(diff_ref=VALID_CHECKOUT_PATCH_DIFF, files_changed=("checkout.py",))
+        )
+        self._assert_rejected(verdict, "inline test_source_ref")
+        with tempfile.TemporaryDirectory() as tmp:
+            outside = Path(tmp) / "test_repro.py"
+            outside.write_text(COUPON_REPRO_TEST, encoding="utf-8")
+            verdict = strict.run(
+                _make_case(),
+                _make_repro(test_source=str(outside)),
+                Patch(diff_ref=VALID_CHECKOUT_PATCH_DIFF, files_changed=("checkout.py",)),
+            )
+            self._assert_rejected(verdict, "outside the case folder")
+
+    def test_x5_staging_dir_is_private_and_removed(self) -> None:
+        with self.verifier._staging_root() as staging:
+            self.assertEqual(staging.stat().st_mode & 0o777, 0o700)
+            created = staging
+        self.assertFalse(created.exists())
 
 
 if __name__ == "__main__":
