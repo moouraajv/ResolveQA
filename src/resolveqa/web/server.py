@@ -42,6 +42,7 @@ from resolveqa.contracts import (
 )
 from resolveqa.intake import Intake
 from resolveqa.delivery import DeliveryBuilder, DeliveryError
+from resolveqa.playbook import Playbook, load_playbook
 from resolveqa.reply import ReplyComposeError, ReplyComposer, ReplyOutcome
 from resolveqa.store import EventStore, EventStoreError
 from resolveqa.timeline import TimelineError, build_timeline_html, load_timeline, timeline_to_dict
@@ -610,14 +611,20 @@ class IntakeHTTPServer(ThreadingHTTPServer):
         runs_root: Path | str | None = None,
         reply_composer: ReplyComposer | None = None,
         delivery_builder: DeliveryBuilder | None = None,
+        playbook: Playbook | None = None,
+        playbook_path: Path | str | None = None,
     ) -> None:
         self.intake = intake if intake is not None else Intake()
         self.runs_root = Path(runs_root) if runs_root is not None else _DEFAULT_RUNS_ROOT
-        self.reply_composer = reply_composer if reply_composer is not None else ReplyComposer()
+        loaded = playbook if playbook is not None else load_playbook(playbook_path)
+        self.playbook = loaded
+        self.reply_composer = (
+            reply_composer if reply_composer is not None else ReplyComposer(loaded)
+        )
         self.delivery_builder = (
             delivery_builder
             if delivery_builder is not None
-            else DeliveryBuilder(runs_root=self.runs_root)
+            else DeliveryBuilder(runs_root=self.runs_root, playbook=loaded)
         )
         super().__init__(server_address, IntakeRequestHandler)
 
