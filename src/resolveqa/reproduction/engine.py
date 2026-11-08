@@ -2,13 +2,11 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import re
 import shutil
-import uuid
-from datetime import datetime, timezone
+import tempfile
 from pathlib import Path
 from typing import Any, Optional
 
@@ -24,101 +22,21 @@ from resolveqa.contracts import (
 )
 from resolveqa.llm import LLMAdapter, LLMOutputError, build_delimited_messages
 from resolveqa.sandbox import LocalSandbox
-
-try:
-    from resolveqa.store.evidence_store import EvidenceStore as _SharedEvidenceStore
-except ImportError:  # pragma: no cover - fallback until PR #47 merges into main
-    _SharedEvidenceStore = None  # type: ignore[assignment,misc]
+from resolveqa.store.evidence_store import EvidenceStore
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 
-_ENV_ERROR_MARKERS = (
+_GENUINE_ENV_ERROR_MARKERS = (
     "ImportError",
     "ModuleNotFoundError",
     "SyntaxError",
     "IndentationError",
     "TabError",
-    "NameError",
-    "TypeError",
-    "AttributeError",
-    "OSError",
-    "PermissionError",
-    "FileNotFoundError",
-    "MemoryError",
+    "No such file or directory",
+    "command not found",
+    "Target repository",
+    "does not exist",
 )
-
-_SECRET_PATTERNS: tuple[re.Pattern[str], ...] = (
-    re.compile(r"\bsk-[A-Za-z0-9_-]{8,}\b"),
-    re.compile(r"\brc_[A-Za-z0-9_-]{8,}\b"),
-    re.compile(r"\bgh[pousr]_[A-Za-z0-9]{8,}\b"),
-    re.compile(r"\bgithub_pat_[A-Za-z0-9_]{8,}\b"),
-    re.compile(r"\bAKIA[0-9A-Z]{16}\b"),
-    re.compile(r"(?i)(bearer\s+)[A-Za-z0-9._\-]{8,}"),
-)
-
-
-def _redact_text(text: str) -> str:
-    if not text:
-        return ""
-    scrubbed = str(text)
-    for pat in _SECRET_PATTERNS[:-1]:
-        scrubbed = pat.sub("[REDACTED_SECRET]", scrubbed)
-    scrubbed = _SECRET_PATTERNS[-1].sub(r"\1[REDACTED_SECRET]", scrubbed)
-    return scrubbed
-
-
-class _LocalEvidenceWriter:
-    """Compatible fallback evidence store used when `resolveqa.store.evidence_store` is not yet merged."""
-
-    def __init__(self, runs_root: Path | str | None = None) -> None:
-        self.runs_root = Path(runs_root).resolve() if runs_root is not None else (REPO_ROOT / "runs").resolve()
-        self._seq: dict[str, int] = {}
-
-    def save_evidence(
-        self,
-        case_id: str,
-        evidence_id: Optional[str] = None,
-        kind: EvidenceKind = EvidenceKind.TEST_SOURCE,
-        content: str = "",
-        extension: str = "txt",
-    ) -> Evidence:
-        if "/" in case_id or "\\" in case_id or ".." in case_id or not case_id.strip():
-            raise ValueError(f"Invalid case_id: {case_id!r}")
-        c_dir = (self.runs_root / case_id.strip()).resolve()
-        if not c_dir.is_relative_to(self.runs_root):
-            raise ValueError(f"case_id escapes runs_root: {case_id!r}")
-        ev_dir = (c_dir / "evidence").resolve()
-        ev_dir.mkdir(parents=True, exist_ok=True)
-
-        if evidence_id is None:
-            seq = self._seq.get(case_id, 0) + 1
-            self._seq[case_id] = seq
-            kind_slug = getattr(kind, "value", str(kind)).replace("_", "-")
-            safe_ev_id = f"ev-{kind_slug}-{seq:04d}-{uuid.uuid4().hex[:8]}"
-        else:
-            safe_ev_id = evidence_id.strip()
-
-        safe_ext = "".join(ch for ch in extension.lstrip(".") if ch.isalnum() or ch in {"_", "-"}) or "txt"
-        rel_path = f"evidence/{safe_ev_id}.{safe_ext}"
-        full_path = (c_dir / rel_path).resolve()
-        if not full_path.is_relative_to(c_dir):
-            raise ValueError(f"Evidence path escapes case directory: {rel_path}")
-        if full_path.exists() or any(ev_dir.glob(f"{safe_ev_id}.*")):
-            raise FileExistsError(f"Evidence {safe_ev_id!r} already exists")
-
-        raw_bytes = _redact_text(content).encode("utf-8")
-        with full_path.open("xb") as fh:
-            fh.write(raw_bytes)
-        digest = hashlib.sha256(raw_bytes).hexdigest()
-        now_iso = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-        return Evidence(
-            evidence_id=safe_ev_id,
-            case_id=case_id.strip(),
-            kind=kind,
-            path=rel_path,
-            sha256=digest,
-            created_at=now_iso,
-        )
 
 
 def _normalize_numbers(text: str) -> list[float]:
@@ -140,62 +58,140 @@ def _format_brl_str(val: float) -> str:
 
 
 def _synthesize_grounded_repro_test(triage: TriageRecord, report_text: str) -> str:
-    """Synthesize a Python unittest reproduction test using the exact numbers from `triage`."""
-    exp_nums = _normalize_numbers(triage.expected)
-    obs_nums = _normalize_numbers(triage.observed)
-    inp_nums = _normalize_numbers(triage.input + " " + report_text)
+    """Synthesize a deterministic unittest reproducing the defect using the actual numbers from triage."""
+    expected_nums = _normalize_numbers(triage.expected)
+    observed_nums = _normalize_numbers(triage.observed)
+    input_nums = _normalize_numbers(triage.input)
 
-    expected_val = exp_nums[0] if exp_nums else 180.0
-    subtotal_val = obs_nums[0] if obs_nums else 200.0
+    exp_val = expected_nums[0] if expected_nums else 180.0
+    subtotal_val = input_nums[0] if input_nums else (observed_nums[0] if observed_nums else 200.0)
 
-    pct_match = re.search(r"(\d+(?:[.,]\d+)?)\s*%", triage.input + " " + report_text)
-    if pct_match:
-        coupon_pct = float(pct_match.group(1).replace(",", "."))
-    elif subtotal_val > 0 and expected_val < subtotal_val:
-        coupon_pct = round((1.0 - expected_val / subtotal_val) * 100.0, 2)
-    else:
-        coupon_pct = 10.0
-
-    exp_brl = triage.expected.strip() if "R$" in triage.expected else _format_brl_str(expected_val)
-    sub_int = int(subtotal_val) if float(subtotal_val).is_integer() else int(round(subtotal_val))
-    exp_int = int(expected_val) if float(expected_val).is_integer() else int(round(expected_val))
-    pct_int = int(coupon_pct) if float(coupon_pct).is_integer() else int(round(coupon_pct))
+    pct_match = re.search(r"(\d+(?:[.,]\d+)?)\s*%", f"{triage.input} {report_text}")
+    pct_val = float(pct_match.group(1).replace(",", ".")) if pct_match else 10.0
 
     return (
+        '"""Auto-generated defect reproduction test (Issue #10, RF-04)."""\n\n'
         "import unittest\n"
-        "from checkout import calculate_total, format_brl\n\n\n"
-        "class TestGeneratedCouponReproduction(unittest.TestCase):\n"
-        f"    def test_coupon_{pct_int}_percent_on_{sub_int}_reduces_total_to_{exp_int}(self) -> None:\n"
-        f"        total = calculate_total({subtotal_val:.1f}, coupon_percent={coupon_pct:.1f})\n"
-        f"        self.assertEqual(format_brl(total), {exp_brl!r})\n"
-        f"        self.assertEqual(total, {expected_val:.1f})\n\n\n"
-        "if __name__ == '__main__':\n"
+        "from checkout import calculate_total\n\n\n"
+        "class TestCheckoutDefectReproduction(unittest.TestCase):\n"
+        '    """Verify that applying a coupon produces the expected discounted total."""\n\n'
+        "    def test_coupon_discount_applied_to_total(self) -> None:\n"
+        f"        subtotal = {subtotal_val}\n"
+        f"        coupon_percent = {pct_val}\n"
+        f"        expected_total = {exp_val}\n\n"
+        "        actual_total = calculate_total(subtotal, coupon_percent=coupon_percent)\n"
+        "        self.assertEqual(\n"
+        "            actual_total,\n"
+        "            expected_total,\n"
+        '            f"Expected total with {coupon_percent}% coupon to be {expected_total}, but got {actual_total}",\n'
+        "        )\n\n\n"
+        'if __name__ == "__main__":\n'
         "    unittest.main()\n"
     )
 
 
-def _extract_failing_assertion(combined_log: str, triage: TriageRecord) -> Optional[str]:
-    """Extract the `AssertionError` message or assertion line if it is linked to `triage` values."""
-    if "AssertionError" not in combined_log:
-        return None
+import ast
 
-    lines = [ln.strip() for ln in combined_log.splitlines() if ln.strip()]
-    assertion_line = ""
-    for ln in reversed(lines):
-        if "AssertionError" in ln:
-            assertion_line = ln
+
+def _test_code_asserts_expected(test_code: str, expected_str: str) -> bool:
+    """B7: Verify that a test_* method in `test_code` contains an assertion comparing against the expected value."""
+    exp_nums = _normalize_numbers(expected_str)
+    if not exp_nums:
+        return True
+
+    try:
+        tree = ast.parse(test_code)
+    except SyntaxError:
+        return False
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef) and node.name.startswith("test_"):
+            has_assert = any(
+                isinstance(n, ast.Assert)
+                or (
+                    isinstance(n, ast.Call)
+                    and isinstance(n.func, ast.Attribute)
+                    and n.func.attr.startswith("assert")
+                )
+                for n in ast.walk(node)
+            )
+            if not has_assert:
+                continue
+            fn_code = ast.unparse(node)
+            fn_nums = _normalize_numbers(fn_code)
+            if any(any(abs(en - fn) < 1e-2 for fn in fn_nums) for en in exp_nums):
+                return True
+    return False
+
+
+def _extract_genuine_failing_assertion(log: str, triage: TriageRecord) -> Optional[str]:
+    """B1: Verify that the failure is from a test method (FAIL: test_*), not setUp/import/module,
+
+    that the AssertionError originated inside a test_* method, and that triage.expected is in the failed comparison.
+    """
+    fail_match = re.search(r"^FAIL:\s+(test_\w+)", log, re.MULTILINE)
+    if not fail_match:
+        return None
+    test_method_name = fail_match.group(1)
+
+    fail_sections = re.split(r"={10,}", log)
+    target_section = ""
+    for sec in fail_sections:
+        if f"FAIL: {test_method_name}" in sec:
+            target_section = sec
             break
 
-    context_window = "\n".join(lines[-15:]) if lines else combined_log
-    triage_nums = _normalize_numbers(f"{triage.expected} {triage.observed}")
-    log_nums = _normalize_numbers(context_window)
+    if not target_section:
+        target_section = log
 
-    if triage_nums:
-        linked = any(any(abs(tn - ln_num) < 1e-2 for ln_num in log_nums) for tn in triage_nums)
-        if not linked and triage.expected.lower() not in context_window.lower() and triage.observed.lower() not in context_window.lower():
-            return None
+    frame_matches = re.findall(r'File "([^"]+)", line \d+, in (\w+)', target_section)
+    if not frame_matches:
+        return None
+    _, last_func = frame_matches[-1]
+    if last_func == "<module>" or last_func == "setUp" or not last_func.startswith("test_"):
+        return None
 
-    return assertion_line or "AssertionError"
+    assertion_line = ""
+    for line in target_section.splitlines():
+        stripped = line.strip()
+        if (
+            stripped.startswith("AssertionError:")
+            or stripped.startswith("assert ")
+            or "AssertionError" in stripped
+        ):
+            assertion_line = stripped
+
+    if not assertion_line:
+        return None
+
+    exp_nums = _normalize_numbers(triage.expected)
+    if exp_nums:
+        assertion_nums = _normalize_numbers(assertion_line)
+        has_expected_in_comparison = any(
+            any(abs(en - an) < 1e-2 for an in assertion_nums) for en in exp_nums
+        )
+        if not has_expected_in_comparison:
+            has_expected_text = any(
+                str(int(en)) in assertion_line if en.is_integer() else f"{en:.2f}" in assertion_line
+                for en in exp_nums
+            )
+            if not has_expected_text:
+                return None
+
+    return assertion_line
+
+
+def _find_local_sandbox(sandbox: Any) -> Optional[LocalSandbox]:
+    current = sandbox
+    while current is not None:
+        if isinstance(current, LocalSandbox):
+            return current
+        current = (
+            getattr(current, "inner", None)
+            or getattr(current, "delegate", None)
+            or getattr(current, "target", None)
+        )
+    return None
 
 
 class ReproductionEngine:
@@ -205,7 +201,7 @@ class ReproductionEngine:
         self,
         llm: Optional[LLMAdapter] = None,
         sandbox: Optional[SandboxStage] = None,
-        store: Optional[Any] = None,
+        store: Optional[EvidenceStore] = None,
         *,
         runs_root: Optional[Path | str] = None,
         base_root: Optional[Path | str] = None,
@@ -214,12 +210,7 @@ class ReproductionEngine:
         self.base_root = Path(base_root).resolve() if base_root is not None else REPO_ROOT
         self.llm = llm if llm is not None else LLMAdapter()
         self.sandbox: SandboxStage = sandbox if sandbox is not None else LocalSandbox(base_root=self.base_root)
-        if store is not None:
-            self.store = store
-        elif _SharedEvidenceStore is not None:
-            self.store = _SharedEvidenceStore(runs_root=runs_root)
-        else:
-            self.store = _LocalEvidenceWriter(runs_root=runs_root)
+        self.store: EvidenceStore = store if store is not None else EvidenceStore(runs_root=runs_root)
         self.timeout_s = float(timeout_s)
         self.last_evidence_by_case: dict[str, tuple[Evidence, Evidence, Evidence]] = {}
 
@@ -245,22 +236,18 @@ class ReproductionEngine:
         return sources
 
     def _execute_in_sandbox(self, case: RunState, test_code: str, test_rel_path: str) -> ExecResult:
-        """Stage a temporary copy of `case.repo_ref` with `test_code` and run it via `self.sandbox.exec`."""
-        sandbox_base = getattr(self.sandbox, "base_root", self.base_root)
-        base_dir = Path(sandbox_base).resolve()
-        source_repo = (base_dir / case.repo_ref).resolve()
-
-        if not isinstance(self.sandbox, LocalSandbox) or not source_repo.is_dir():
-            return self.sandbox.exec(
-                case.repo_ref,
-                f"python3 -m unittest {test_rel_path}",
-                self.timeout_s,
+        """B2 & B5: Prepare isolated copy in tempfile.mkdtemp outside repo with test_code, and run it via self.sandbox.exec."""
+        source_repo = (self.base_root / case.repo_ref).resolve()
+        if not source_repo.is_relative_to(self.base_root) or not source_repo.is_dir():
+            return ExecResult(
+                exit_code=1,
+                stdout_ref="",
+                stderr_ref=f"Target repository {case.repo_ref!r} does not exist in {self.base_root}",
+                timed_out=False,
             )
 
-        runs_staging_parent = base_dir / "runs"
-        runs_staging_parent.mkdir(parents=True, exist_ok=True)
-        stage_name = f"_repro_stage_{case.case_id}_{uuid.uuid4().hex[:8]}"
-        stage_dir = runs_staging_parent / stage_name
+        temp_parent = Path(tempfile.mkdtemp(prefix="resolveqa_repro_"))
+        stage_dir = temp_parent / Path(case.repo_ref).name
         try:
             shutil.copytree(
                 source_repo,
@@ -268,46 +255,69 @@ class ReproductionEngine:
                 symlinks=True,
                 ignore=shutil.ignore_patterns(".git", "__pycache__", ".pytest_cache", ".venv", "*.pyc"),
             )
-            target_test_file = (stage_dir / test_rel_path).resolve()
-            if not target_test_file.is_relative_to(stage_dir.resolve()):
-                raise ValueError(f"Generated test path escapes staging directory: {test_rel_path}")
-            target_test_file.parent.mkdir(parents=True, exist_ok=True)
-            target_test_file.write_text(test_code, encoding="utf-8")
+            test_file = stage_dir / test_rel_path
+            test_file.parent.mkdir(parents=True, exist_ok=True)
+            test_file.write_text(test_code, encoding="utf-8")
 
-            staging_rel = f"runs/{stage_name}"
-            return self.sandbox.exec(
-                staging_rel,
-                f"python3 -m unittest {test_rel_path}",
-                self.timeout_s,
-            )
+            local = _find_local_sandbox(self.sandbox)
+            if local is not None:
+                old_base = local.base_root
+                try:
+                    local.base_root = temp_parent
+                    return self.sandbox.exec(
+                        stage_dir.name,
+                        f"python3 -m unittest {test_rel_path}",
+                        timeout_s=self.timeout_s,
+                    )
+                finally:
+                    local.base_root = old_base
+            else:
+                try:
+                    return self.sandbox.exec(
+                        str(stage_dir),
+                        f"python3 -m unittest {test_rel_path}",
+                        timeout_s=self.timeout_s,
+                    )
+                except Exception:
+                    return self.sandbox.exec(
+                        stage_dir.name,
+                        f"python3 -m unittest {test_rel_path}",
+                        timeout_s=self.timeout_s,
+                    )
         finally:
-            shutil.rmtree(stage_dir, ignore_errors=True)
+            shutil.rmtree(temp_parent, ignore_errors=True)
 
     def _classify_outcome(
-        self,
-        exec_res: ExecResult,
-        triage: TriageRecord,
+        self, exec_res: ExecResult, triage: TriageRecord
     ) -> tuple[ReproOutcome, Optional[str]]:
-        combined_log = f"{exec_res.stdout_ref}\n{exec_res.stderr_ref}".strip()
+        """B1 & B3: Classify execution outcome.
 
+        - RED_ON_ASSERTION: Genuine assertion failure in a test_* method comparing against expected.
+        - GREEN: Test passed OR defect not reproduced (assertion not linked to expected, or target code exception TypeError/AttributeError/NameError).
+        - ENV_ERROR: Genuine environment/infrastructure errors (ImportError, syntax error, timeout, missing repo).
+        """
         if exec_res.timed_out:
             return (ReproOutcome.ENV_ERROR, None)
+
+        combined_log = f"{exec_res.stdout_ref}\n{exec_res.stderr_ref}"
+
+        # Check for genuine environment/import failures first
+        for marker in _GENUINE_ENV_ERROR_MARKERS:
+            if marker in combined_log:
+                return (ReproOutcome.ENV_ERROR, None)
 
         if exec_res.exit_code == 0:
             return (ReproOutcome.GREEN, None)
 
-        if "AssertionError" in combined_log:
-            # Verify no earlier import/syntax error caused a spurious message
-            failing_assertion = _extract_failing_assertion(combined_log, triage)
-            if failing_assertion is not None:
-                return (ReproOutcome.RED_ON_ASSERTION, failing_assertion)
-            return (ReproOutcome.ENV_ERROR, None)
+        # B1: Check for genuine test assertion failure matching triage.expected
+        failing_assertion = _extract_genuine_failing_assertion(combined_log, triage)
+        if failing_assertion is not None:
+            return (ReproOutcome.RED_ON_ASSERTION, failing_assertion)
 
-        for marker in _ENV_ERROR_MARKERS:
-            if marker in combined_log:
-                return (ReproOutcome.ENV_ERROR, None)
-
-        return (ReproOutcome.ENV_ERROR, None)
+        # B3 DECISÃO DA EQUIPE:
+        # Asserção não ligada ao esperado e exceções de código-alvo (TypeError, AttributeError, NameError)
+        # NÃO são RED nem env_error: devolve GREEN ("não reproduzido") para o orquestrador bloquear com blocked/not_reproduced.
+        return (ReproOutcome.GREEN, None)
 
     def run(self, case: RunState, triage: TriageRecord) -> ReproResult:
         """Synthesize a reproduction test from `triage`, execute it in `Sandbox`, classify outcome, and persist evidence."""
@@ -334,9 +344,10 @@ class ReproductionEngine:
         )
 
         used_temp_override = False
+        old_override = getattr(self.llm, "response_override", None)
         if (
             hasattr(self.llm, "response_override")
-            and getattr(self.llm, "response_override", None) is None
+            and old_override is None
             and not getattr(self.llm, "use_real", False)
         ):
             self.llm.response_override = lambda _p, _m, _s: _synthesize_grounded_repro_test(triage, case.report_text)
@@ -350,16 +361,14 @@ class ReproductionEngine:
             )
         finally:
             if used_temp_override:
-                self.llm.response_override = None
+                self.llm.response_override = old_override
 
         test_code = llm_result.content.strip() + "\n"
 
-        # Ensure the generated test references the expected value from triage
-        expected_nums = _normalize_numbers(triage.expected)
-        code_nums = _normalize_numbers(test_code)
-        if expected_nums and not any(any(abs(en - cn) < 1e-2 for cn in code_nums) for en in expected_nums):
+        # B7: Ensure generated test explicitly asserts against expected value
+        if not _test_code_asserts_expected(test_code, triage.expected):
             raise LLMOutputError(
-                f"Generated reproduction test does not reference expected value {triage.expected!r}",
+                f"Generated reproduction test does not assert expected value {triage.expected!r}",
                 purpose="reproduction",
             )
 
@@ -381,12 +390,16 @@ class ReproductionEngine:
             ensure_ascii=False,
         )
 
+        # B4: Use EvidenceStore with revision and simulated=bool(llm_result.mock)
+        is_simulated = bool(getattr(llm_result, "mock", False))
         ev_source = self.store.save_evidence(
             case_id=case.case_id,
             evidence_id=None,
             kind=EvidenceKind.TEST_SOURCE,
             content=test_code,
             extension="py",
+            revision=case.base_revision,
+            simulated=is_simulated,
         )
         ev_log = self.store.save_evidence(
             case_id=case.case_id,
@@ -394,6 +407,8 @@ class ReproductionEngine:
             kind=EvidenceKind.TEST_LOG,
             content=combined_log,
             extension="log",
+            revision=case.base_revision,
+            simulated=is_simulated,
         )
         ev_exit = self.store.save_evidence(
             case_id=case.case_id,
@@ -401,6 +416,8 @@ class ReproductionEngine:
             kind=EvidenceKind.EXIT_CODE,
             content=exit_code_payload,
             extension="json",
+            revision=case.base_revision,
+            simulated=is_simulated,
         )
         self.last_evidence_by_case[case.case_id] = (ev_source, ev_log, ev_exit)
 

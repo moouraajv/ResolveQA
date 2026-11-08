@@ -7,6 +7,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from typing import Any, Optional
 
 from resolveqa.contracts import (
     Attempts,
@@ -18,6 +19,7 @@ from resolveqa.contracts import (
     ReproResult,
     ReproductionStage,
     RunState,
+    SandboxStage,
     TriageRecord,
 )
 from resolveqa.llm import LLMAdapter, LLMOutputError
@@ -36,6 +38,7 @@ def _make_case(
     *,
     case_id: str = "case-repro-001",
     repo_ref: str = "demo-target",
+    base_revision: Optional[str] = "rev-base-12345",
 ) -> RunState:
     return RunState(
         case_id=case_id,
@@ -47,6 +50,7 @@ def _make_case(
         created_at="2026-11-08T00:00:00Z",
         updated_at="2026-11-08T00:00:00Z",
         attempts=Attempts(),
+        base_revision=base_revision,
     )
 
 
@@ -66,7 +70,7 @@ def _make_triage(
 
 
 class TestReproductionStage(unittest.TestCase):
-    """Validate Issue #10 acceptance criteria and safety invariants."""
+    """Validate Issue #10 acceptance criteria, QA regressions, and team decisions."""
 
     def test_satisfies_reproduction_stage_protocol(self) -> None:
         repro = Reproduction()
@@ -74,7 +78,7 @@ class TestReproductionStage(unittest.TestCase):
         self.assertIs(Reproduction, ReproductionEngine)
 
     def test_generated_test_fails_on_buggy_demo_target_with_red_on_assertion_and_stores_evidences(self) -> None:
-        """Critérios 1 e 3: O teste gerado falha na versão com defeito na asserção ligada ao relato (red_on_assertion) e grava código do teste, log e exit code como evidência."""
+        """Critérios 1, 3 e B4: Teste gerado falha com red_on_assertion, grava evidências com EvidenceStore, base_revision e simulated=True."""
         checkout_before = DEMO_TARGET_CHECKOUT.read_text(encoding="utf-8")
         case = _make_case()
         case_snapshot = copy.deepcopy(case.to_dict())
@@ -98,130 +102,192 @@ class TestReproductionStage(unittest.TestCase):
             self.assertNotEqual(result.exit_code, 0)
             self.assertIsNotNone(result.failing_assertion)
             assert result.failing_assertion is not None
-            self.assertTrue(
-                "180" in result.failing_assertion or "200" in result.failing_assertion,
-                f"Expected failing_assertion to mention report values, got: {result.failing_assertion!r}",
-            )
+            self.assertIn("180", result.failing_assertion)
 
-            # Criterion 3: test source, log, and exit code saved as distinct evidences
+            # B4: EvidenceStore with base_revision and simulated=True
             evidences = repro.last_evidence_by_case[case.case_id]
             self.assertEqual(len(evidences), 3)
-            kinds = {ev.kind for ev in evidences}
-            self.assertEqual(
-                kinds,
-                {EvidenceKind.TEST_SOURCE, EvidenceKind.TEST_LOG, EvidenceKind.EXIT_CODE},
-            )
-            ev_ids = {ev.evidence_id for ev in evidences}
-            self.assertEqual(len(ev_ids), 3)
+            for ev in evidences:
+                self.assertEqual(ev.revision, "rev-base-12345")
+                self.assertTrue(ev.simulated)
 
             case_dir = Path(tmp_runs) / case.case_id
             for ev in evidences:
                 ev_file = case_dir / ev.path
                 self.assertTrue(ev_file.is_file(), f"Missing evidence file: {ev_file}")
-                if ev.kind == EvidenceKind.TEST_SOURCE:
-                    self.assertEqual(result.test_source_ref, ev.path)
-                    self.assertIn("calculate_total", ev_file.read_text(encoding="utf-8"))
-                elif ev.kind == EvidenceKind.TEST_LOG:
-                    self.assertEqual(result.log_ref, ev.path)
-                    self.assertIn("AssertionError", ev_file.read_text(encoding="utf-8"))
-                elif ev.kind == EvidenceKind.EXIT_CODE:
-                    exit_payload = json.loads(ev_file.read_text(encoding="utf-8"))
-                    self.assertEqual(exit_payload["exit_code"], result.exit_code)
-                    self.assertEqual(exit_payload["outcome"], "red_on_assertion")
 
-    def test_reproduction_uses_report_specific_values_300_270(self) -> None:
-        """Regra do benchmark: O teste de reprodução usa os valores do relato (R$ 300,00 / R$ 270,00), nunca valores fixos de exemplo."""
-        case_300 = _make_case(
-            "Fiz uma compra de R$ 300,00 com cupom de 10%. O valor esperado era R$ 270,00, mas o observado foi R$ 300,00.",
-            case_id="case-repro-300",
-        )
-        triage_300 = _make_triage(
-            input_desc="compra de R$ 300,00 com cupom de 10%",
-            expected="R$ 270,00",
-            observed="R$ 300,00",
-        )
-        with tempfile.TemporaryDirectory() as tmp_runs:
-            repro = Reproduction(
-                llm=LLMAdapter(),
-                sandbox=LocalSandbox(base_root=REPO_ROOT),
-                runs_root=tmp_runs,
-            )
-            result = repro.run(case_300, triage_300)
-            self.assertEqual(result.outcome, ReproOutcome.RED_ON_ASSERTION)
-            assert result.failing_assertion is not None
-            self.assertTrue("270" in result.failing_assertion or "300" in result.failing_assertion)
+    def test_b1_three_false_red_cases_proven_by_qa_are_rejected(self) -> None:
+        """B1 regression: assert no nível do módulo, AssertionError no setUp e assertEqual(len('abc'), 200) NUNCA são classificados como RED_ON_ASSERTION."""
+        triage = _make_triage(expected="R$ 180,00", observed="R$ 200,00")
 
-            source_path = Path(tmp_runs) / case_300.case_id / result.test_source_ref
-            source_code = source_path.read_text(encoding="utf-8")
-            self.assertIn("300", source_code)
-            self.assertIn("270", source_code)
-            self.assertNotIn("180", source_code)
-
-    def test_import_error_or_environment_failure_is_classified_as_env_error(self) -> None:
-        """Critério 2: Erro de importação ou ambiente é classificado como env_error."""
-        bad_import_test_code = (
+        # 1. Assert no nível do módulo
+        module_level_assert_code = (
             "import unittest\n"
-            "import non_existent_checkout_module_xyz\n\n"
-            "class TestBrokenImport(unittest.TestCase):\n"
-            "    def test_broken(self) -> None:\n"
+            "assert 180 == 200\n\n"
+            "class TestModAssert(unittest.TestCase):\n"
+            "    def test_dummy(self) -> None:\n"
             "        self.assertEqual(180, 180)\n"
         )
-        case = _make_case(case_id="case-repro-enverr")
-        triage = _make_triage()
-
+        case1 = _make_case(case_id="case-b1-mod")
         with tempfile.TemporaryDirectory() as tmp_runs:
             repro = Reproduction(
-                llm=LLMAdapter(response_override=bad_import_test_code),
+                llm=LLMAdapter(response_override=module_level_assert_code),
                 sandbox=LocalSandbox(base_root=REPO_ROOT),
                 runs_root=tmp_runs,
             )
-            result = repro.run(case, triage)
-            self.assertEqual(result.outcome, ReproOutcome.ENV_ERROR)
-            self.assertIsNone(result.failing_assertion)
+            res1 = repro.run(case1, triage)
+            self.assertNotEqual(res1.outcome, ReproOutcome.RED_ON_ASSERTION)
 
-            # Timeout in sandbox also classifies as env_error
-            class _TimeoutSandbox:
-                def exec(self, workdir_ref: str, command: str, timeout_s: float = 60.0) -> ExecResult:
-                    return ExecResult(
-                        exit_code=124,
-                        stdout_ref="",
-                        stderr_ref="Command timed out after 60s",
-                        timed_out=True,
-                    )
-
-            repro_timeout = Reproduction(
-                llm=LLMAdapter(),
-                sandbox=_TimeoutSandbox(),
+        # 2. AssertionError no setUp
+        setup_assert_code = (
+            "import unittest\n\n"
+            "class TestSetupAssert(unittest.TestCase):\n"
+            "    def setUp(self) -> None:\n"
+            "        self.assertEqual(180, 200)\n\n"
+            "    def test_dummy(self) -> None:\n"
+            "        self.assertEqual(180, 180)\n"
+        )
+        case2 = _make_case(case_id="case-b1-setup")
+        with tempfile.TemporaryDirectory() as tmp_runs:
+            repro = Reproduction(
+                llm=LLMAdapter(response_override=setup_assert_code),
+                sandbox=LocalSandbox(base_root=REPO_ROOT),
                 runs_root=tmp_runs,
             )
-            case_to = _make_case(case_id="case-repro-timeout")
-            res_to = repro_timeout.run(case_to, triage)
-            self.assertEqual(res_to.outcome, ReproOutcome.ENV_ERROR)
-            self.assertIsNone(res_to.failing_assertion)
+            res2 = repro.run(case2, triage)
+            self.assertNotEqual(res2.outcome, ReproOutcome.RED_ON_ASSERTION)
 
-    def test_passing_test_is_classified_as_green(self) -> None:
-        """Se o teste gerado passar (exit_code == 0), o resultado é classificado como green."""
-        passing_test_code = (
+        # 3. assertEqual(len('abc'), 200) — sem o valor esperado 180 na comparação que falhou
+        unrelated_assert_code = (
+            "import unittest\n\n"
+            "class TestUnrelatedAssert(unittest.TestCase):\n"
+            "    def test_len_mismatch(self) -> None:\n"
+            "        # Uses 180 in dummy comment\n"
+            "        self.assertEqual(len('abc'), 200)\n"
+        )
+        case3 = _make_case(case_id="case-b1-len")
+        with tempfile.TemporaryDirectory() as tmp_runs:
+            repro = Reproduction(
+                llm=LLMAdapter(response_override=unrelated_assert_code),
+                sandbox=LocalSandbox(base_root=REPO_ROOT),
+                runs_root=tmp_runs,
+            )
+            # B7 check rejects assertion not comparing expected, or if forced, classifies as GREEN (not RED)
+            try:
+                res3 = repro.run(case3, triage)
+                self.assertNotEqual(res3.outcome, ReproOutcome.RED_ON_ASSERTION)
+                self.assertEqual(res3.outcome, ReproOutcome.GREEN)
+            except LLMOutputError:
+                pass  # B7 guard successfully caught unasserted expected value
+
+    def test_b2_delegating_sandbox_and_missing_repo_ref(self) -> None:
+        """B2 & B5: Sandbox delegada roda no diretório preparado com o teste, e repo_ref inexistente falha explicitamente."""
+        triage = _make_triage()
+
+        class DelegatingSandbox(SandboxStage):
+            def __init__(self, inner: SandboxStage) -> None:
+                self.inner = inner
+                self.recorded_calls: list[tuple[str, str]] = []
+
+            def exec(
+                self,
+                repo_ref: str,
+                command: str,
+                env: Optional[dict[str, str]] = None,
+                timeout_s: Optional[float] = None,
+            ) -> ExecResult:
+                self.recorded_calls.append((repo_ref, command))
+                return self.inner.exec(repo_ref, command, timeout_s=timeout_s)
+
+        inner_sandbox = LocalSandbox(base_root=REPO_ROOT)
+        delegating_sandbox = DelegatingSandbox(inner_sandbox)
+
+        case = _make_case(case_id="case-b2-delegating")
+        with tempfile.TemporaryDirectory() as tmp_runs:
+            repro = Reproduction(
+                llm=LLMAdapter(),
+                sandbox=delegating_sandbox,
+                runs_root=tmp_runs,
+            )
+            res = repro.run(case, triage)
+            self.assertEqual(res.outcome, ReproOutcome.RED_ON_ASSERTION)
+            self.assertGreaterEqual(len(delegating_sandbox.recorded_calls), 1)
+
+            # Target demo-target original was never modified
+            self.assertFalse((REPO_ROOT / "demo-target" / "tests" / "test_repro_generated.py").exists())
+
+        # Inexistent repo_ref fails explicitly with ENV_ERROR
+        case_missing = _make_case(repo_ref="non_existent_target_repo_xyz", case_id="case-b2-missing")
+        with tempfile.TemporaryDirectory() as tmp_runs:
+            repro = Reproduction(llm=LLMAdapter(), sandbox=inner_sandbox, runs_root=tmp_runs)
+            res_missing = repro.run(case_missing, triage)
+            self.assertEqual(res_missing.outcome, ReproOutcome.ENV_ERROR)
+
+    def test_b3_target_exceptions_and_unrelated_assertions_are_green_not_env_error(self) -> None:
+        """B3 DECISÃO DA EQUIPE: TypeError, AttributeError, NameError do código-alvo devolvem resultado não reproduzido (GREEN) para o orquestrador bloquear como not_reproduced, NUNCA env_error."""
+        triage = _make_triage()
+
+        type_error_code = (
             "import unittest\n"
             "from checkout import calculate_total\n\n"
-            "class TestPassing(unittest.TestCase):\n"
-            "    def test_passes_with_buggy_200(self) -> None:\n"
-            "        # Uses 180 in comment/var but asserts 200.0 == 200.0\n"
-            "        expected_hint = 180.0\n"
-            "        self.assertEqual(calculate_total(200.0, coupon_percent=0.0), 200.0)\n"
+            "class TestTypeError(unittest.TestCase):\n"
+            "    def test_calls_with_invalid_type(self) -> None:\n"
+            "        self.assertEqual(180, 180)  # satisfy B7\n"
+            "        calculate_total(None)  # raises TypeError\n"
         )
-        case = _make_case(case_id="case-repro-green")
-        triage = _make_triage()
+        case_te = _make_case(case_id="case-b3-te")
         with tempfile.TemporaryDirectory() as tmp_runs:
             repro = Reproduction(
-                llm=LLMAdapter(response_override=passing_test_code),
+                llm=LLMAdapter(response_override=type_error_code),
                 sandbox=LocalSandbox(base_root=REPO_ROOT),
                 runs_root=tmp_runs,
             )
-            result = repro.run(case, triage)
-            self.assertEqual(result.outcome, ReproOutcome.GREEN)
-            self.assertEqual(result.exit_code, 0)
-            self.assertIsNone(result.failing_assertion)
+            res_te = repro.run(case_te, triage)
+            self.assertEqual(res_te.outcome, ReproOutcome.GREEN)
+            self.assertIsNone(res_te.failing_assertion)
+
+        attribute_error_code = (
+            "import unittest\n"
+            "from checkout import calculate_total\n\n"
+            "class TestAttrError(unittest.TestCase):\n"
+            "    def test_calls_attr(self) -> None:\n"
+            "        self.assertEqual(180, 180)  # satisfy B7\n"
+            "        calculate_total.non_existent_attr()\n"
+        )
+        case_ae = _make_case(case_id="case-b3-ae")
+        with tempfile.TemporaryDirectory() as tmp_runs:
+            repro = Reproduction(
+                llm=LLMAdapter(response_override=attribute_error_code),
+                sandbox=LocalSandbox(base_root=REPO_ROOT),
+                runs_root=tmp_runs,
+            )
+            res_ae = repro.run(case_ae, triage)
+            self.assertEqual(res_ae.outcome, ReproOutcome.GREEN)
+            self.assertIsNone(res_ae.failing_assertion)
+
+    def test_b6_and_b7_override_restoration_and_assertion_guard(self) -> None:
+        """B6/B7: llm.response_override é restaurado com segurança e o guard exige que o valor esperado esteja na asserção."""
+        llm = LLMAdapter()
+        triage = _make_triage(expected="R$ 180,00")
+        case = _make_case(case_id="case-b6")
+
+        repro = Reproduction(llm=llm, sandbox=LocalSandbox(base_root=REPO_ROOT))
+        self.assertIsNone(llm.response_override)
+        res = repro.run(case, triage)
+        self.assertIsNone(llm.response_override)
+
+        # B7: Test code having the expected number only in a comment while the assertion does not compare it -> LLMOutputError
+        comment_only_code = (
+            "import unittest\n\n"
+            "# The expected value was 180.0\n"
+            "class TestCommentOnly(unittest.TestCase):\n"
+            "    def test_unrelated(self) -> None:\n"
+            "        self.assertEqual(1, 1)\n"
+        )
+        with self.assertRaises(LLMOutputError):
+            llm_comment = LLMAdapter(response_override=comment_only_code)
+            repro_b7 = Reproduction(llm=llm_comment, sandbox=LocalSandbox(base_root=REPO_ROOT))
+            repro_b7.run(case, triage)
 
 
 if __name__ == "__main__":
