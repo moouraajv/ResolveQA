@@ -1,0 +1,3 @@
+# Relato
+
+Comprei R$ 200,00 no site, apliquei o cupom DESC10 de 10% e o total continuou R$ 200,00. Deveria ser R$ 180,00.

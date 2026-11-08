@@ -1,0 +1,32 @@
+[
+  {
+    "evidence_id": "ev-report-0001-e1b9a4b2",
+    "case_id": "case-a70a3529004f4e4c983697f1367a7976",
+    "kind": "report",
+    "path": "evidence/ev-report-0001-e1b9a4b2.txt",
+    "sha256": "bda9cd673ec5fcbb9d4eee2e88a7f72a8119bdc4f4d865c81c18302432488c59",
+    "revision": null,
+    "created_at": "2026-11-08T12:32:08.726296Z",
+    "simulated": true
+  },
+  {
+    "evidence_id": "ev-triage-record-0003-03338533",
+    "case_id": "case-a70a3529004f4e4c983697f1367a7976",
+    "kind": "triage_record",
+    "path": "evidence/ev-triage-record-0003-03338533.json",
+    "sha256": "71dc5fe05e13201faa070ab9c4deba6d84c047b25ced6a47aafdc4ef313f4d81",
+    "revision": null,
+    "created_at": "2026-11-08T12:32:08.745368Z",
+    "simulated": true
+  },
+  {
+    "evidence_id": "ev-customer-message-0004-029c2485",
+    "case_id": "case-a70a3529004f4e4c983697f1367a7976",
+    "kind": "customer_message",
+    "path": "evidence/ev-customer-message-0004-029c2485.json",
+    "sha256": "a68b5e095ccf4695d8ce15f9c5cd439c6c0b7a6faf283b764a3ffc3dc76736e2",
+    "revision": null,
+    "created_at": "2026-11-08T12:32:08.751493Z",
+    "simulated": true
+  }
+]

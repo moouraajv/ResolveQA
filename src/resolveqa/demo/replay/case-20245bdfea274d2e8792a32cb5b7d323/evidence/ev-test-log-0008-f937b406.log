@@ -1,0 +1,26 @@
+--- STDOUT ---
+
+--- STDERR ---
+F
+======================================================================
+FAIL: test_coupon_discount_applied_to_total (tests.test_repro_generated.TestCheckoutDefectReproduction.test_coupon_discount_applied_to_total)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/tmp/resolveqa_sandbox_buwx_p9i/workspace/tests/test_repro_generated.py", line 16, in test_coupon_discount_applied_to_total
+    self.assertEqual(
+    ~~~~~~~~~~~~~~~~^
+        actual_total,
+        ^^^^^^^^^^^^^
+        expected_total,
+        ^^^^^^^^^^^^^^^
+        f"Expected total with {coupon_percent}% coupon to be {expected_total}, but got {actual_total}",
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+AssertionError: 200.0 != 180.0 : Expected total with 10.0% coupon to be 180.0, but got 200.0
+
+----------------------------------------------------------------------
+Ran 1 test in 0.034s
+
+FAILED (failures=1)
+

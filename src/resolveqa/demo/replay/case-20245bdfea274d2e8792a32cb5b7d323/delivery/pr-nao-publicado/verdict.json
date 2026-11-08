@@ -1,0 +1,24 @@
+{
+  "before": {
+    "command": "python3 -m pytest -v tests/test_repro_generated.py",
+    "exit_code": 1,
+    "duration_s": 2.1816,
+    "log_ref": "============================= test session starts ==============================\nplatform linux -- Python 3.14.4, pytest-9.2.0, pluggy-1.7.0\nrootdir: /tmp/resolveqa_sandbox_1swg1n_9/workspace\nconfigfile: pyproject.toml\ncollected 1 item\n\ntests/test_repro_generated.py F                                          [100%]\n\n=================================== FAILURES ===================================\n_____ TestCheckoutDefectReproduction.test_coupon_discount_applied_to_total _____\n\nself = <tests.test_repro_generated.TestCheckoutDefectReproduction testMethod=test_coupon_discount_applied_to_total>\n\n    def test_coupon_discount_applied_to_total(self) -> None:\n        subtotal = 200.0\n        coupon_percent = 10.0\n        expected_total = 180.0\n    \n        actual_total = calculate_total(subtotal, coupon_percent=coupon_percent)\n>       self.assertEqual(\n            actual_total,\n            expected_total,\n            f\"Expected total with {coupon_percent}% coupon to be {expected_total}, but got {actual_total}\",\n        )\nE       AssertionError: 200.0 != 180.0 : Expected total with 10.0% coupon to be 180.0, but got 200.0\n\ntests/test_repro_generated.py:16: AssertionError\n=========================== short test summary info ============================\nFAILED tests/test_repro_generated.py::TestCheckoutDefectReproduction::test_coupon_discount_applied_to_total\n============================== 1 failed in 0.13s ==============================="
+  },
+  "after": {
+    "command": "python3 -m pytest -v tests/test_repro_generated.py",
+    "exit_code": 0,
+    "duration_s": 0.8171,
+    "log_ref": "============================= test session starts ==============================\nplatform linux -- Python 3.14.4, pytest-9.2.0, pluggy-1.7.0\nrootdir: /tmp/resolveqa_sandbox_8kj9zgnl/workspace\nconfigfile: pyproject.toml\ncollected 1 item\n\ntests/test_repro_generated.py .                                          [100%]\n\n============================== 1 passed in 0.04s ==============================="
+  },
+  "suite": {
+    "command": "python3 -m pytest -v",
+    "exit_code": 0,
+    "duration_s": 0.8305,
+    "log_ref": "============================= test session starts ==============================\nplatform linux -- Python 3.14.4, pytest-9.2.0, pluggy-1.7.0\nrootdir: /tmp/resolveqa_sandbox_lorojnv8/workspace\nconfigfile: pyproject.toml\ntestpaths: tests\ncollected 5 items\n\ntests/test_checkout.py ....                                              [ 80%]\ntests/test_repro_generated.py .                                          [100%]\n\n============================== 5 passed in 0.08s ==============================="
+  },
+  "base_revision": "f54f980e114d8c62f20f718f667a56860090bb03aaf74f87a4d96ce742b5b1f1",
+  "fix_revision": "595ca88bfc372471ce230017b061a4ae2be8ec1e26896874172fc6bae0d15f70",
+  "result": "verified",
+  "reasons": []
+}

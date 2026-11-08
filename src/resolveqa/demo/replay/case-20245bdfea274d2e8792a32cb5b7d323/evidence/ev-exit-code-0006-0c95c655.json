@@ -1,0 +1,6 @@
+{
+  "exit_code": 1,
+  "timed_out": false,
+  "outcome": "red_on_assertion",
+  "failing_assertion": "AssertionError: 200.0 != 180.0 : Expected total with 10.0% coupon to be 180.0, but got 200.0"
+}

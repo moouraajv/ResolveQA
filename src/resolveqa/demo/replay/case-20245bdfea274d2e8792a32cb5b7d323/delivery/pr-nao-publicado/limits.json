@@ -1,0 +1,7 @@
+{
+  "max_files_changed": 3,
+  "max_fix_attempts": 2,
+  "max_llm_calls": 12,
+  "max_output_bytes": 65536,
+  "test_timeout_s": 600
+}

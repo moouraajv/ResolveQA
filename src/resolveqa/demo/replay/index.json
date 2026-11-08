@@ -1,0 +1,82 @@
+{
+  "format_version": 1,
+  "recorded_at": "2026-11-08T12:32:03Z",
+  "mode": "mock",
+  "pending": [
+    [
+      "c4adc50cc0add29028fc746e8a507d5acd539820",
+      "triage/engine.py"
+    ],
+    [
+      "db9d18e30c5183502aaf410cccc4b6760665e429",
+      "reproduction/engine.py"
+    ],
+    [
+      "db19a2834a7c77ac05ffacf28a1d2816b87a716b",
+      "fix/engine.py"
+    ],
+    [
+      "7ddff5a33a90a7959d0ff2d9a5e4fb0308627d06",
+      "verification/verifier.py"
+    ]
+  ],
+  "scenarios": {
+    "coupon": "case-20245bdfea274d2e8792a32cb5b7d323",
+    "vague": "case-a70a3529004f4e4c983697f1367a7976"
+  },
+  "files": {
+    "case-20245bdfea274d2e8792a32cb5b7d323/acompanhamento-replay.html": "94fc8390ecbd9454c933a877d7120e11211deb8e723be4a64cdd53b7ef8b7419",
+    "case-20245bdfea274d2e8792a32cb5b7d323/acompanhamento.html": "1c639211a1e99242982e7e3aa245ba1f5c90d70af2ca7e654deb73f8260d7456",
+    "case-20245bdfea274d2e8792a32cb5b7d323/comprovante.txt": "6e633724734b8b918a8ae13f49ddc260b158e66b12f2d0f99dbf9a64fec7fd4d",
+    "case-20245bdfea274d2e8792a32cb5b7d323/delivery/pr-nao-publicado/CHANGELOG.md": "d35f125c2361db70b7ea4d856ebd37fc4fd867674003333767298f0d42aa178c",
+    "case-20245bdfea274d2e8792a32cb5b7d323/delivery/pr-nao-publicado/MANIFEST.json": "7c7834b05db3fdffcd75f11d2b1b2a7f83e53258e93f19fde2ff8a9d2492bda4",
+    "case-20245bdfea274d2e8792a32cb5b7d323/delivery/pr-nao-publicado/README.md": "b9782a891ea84507cef547fb6b54fd128ac5c29a941656e092231077760f43f0",
+    "case-20245bdfea274d2e8792a32cb5b7d323/delivery/pr-nao-publicado/after.log": "586691d677163fccac3cb99898ed6da4ece5ae7dc8eff4f08e544a5b274da8e4",
+    "case-20245bdfea274d2e8792a32cb5b7d323/delivery/pr-nao-publicado/before.log": "96f98630dfd06cfb3acb7ebdf3e1d42e148b751ab191df8467625b8c78132c28",
+    "case-20245bdfea274d2e8792a32cb5b7d323/delivery/pr-nao-publicado/cause.md": "c8844e49face0e0f9bec3e67deff7b70d2c86f14880049565ee042c87560da44",
+    "case-20245bdfea274d2e8792a32cb5b7d323/delivery/pr-nao-publicado/diff.patch": "229c264f8cc8a889d69086085a8ebf8efc57642cf6cff4f152baed3834e4a80f",
+    "case-20245bdfea274d2e8792a32cb5b7d323/delivery/pr-nao-publicado/kb_drafts/case-20245bdfea274d2e8792a32cb5b7d323.md": "7e6095e9b72d538008bc59a79d8fcb251e510df6ee24e6296d9f7135e26a3a98",
+    "case-20245bdfea274d2e8792a32cb5b7d323/delivery/pr-nao-publicado/limits.json": "20be3ebfd6ecfff0462e2f0f0ca17d63ff61998553a5e2d824ec72f7b70a2289",
+    "case-20245bdfea274d2e8792a32cb5b7d323/delivery/pr-nao-publicado/report.md": "f4598fd84709a1c7eb7802cddc67f909d89c303f1bdc5e1d4d54b6db5abffe5d",
+    "case-20245bdfea274d2e8792a32cb5b7d323/delivery/pr-nao-publicado/suite.log": "acc9a057943a8717d87043c762910e0f46994f066cd602b60090ef8359c1fa74",
+    "case-20245bdfea274d2e8792a32cb5b7d323/delivery/pr-nao-publicado/technical_notes/case-20245bdfea274d2e8792a32cb5b7d323.md": "04637a17489b53e2d2edfa39186a99e59c86b78f914a9efb34ff2d830ea2856f",
+    "case-20245bdfea274d2e8792a32cb5b7d323/delivery/pr-nao-publicado/verdict.json": "666a2273537bbe6dbbc110e09c18bb1816308467560b42c690b7af0952179827",
+    "case-20245bdfea274d2e8792a32cb5b7d323/demo-result.json": "90f9fb3a1e0eb863d0ee3a61d83adaf2d6cd8cbc42785efff339e140b98f035f",
+    "case-20245bdfea274d2e8792a32cb5b7d323/events.jsonl": "3a8ff73b5dc6d6dc9e72b47a8bb15b40c9544fc9a32f089d1b9f53afc1a1c037",
+    "case-20245bdfea274d2e8792a32cb5b7d323/evidence/after.log": "586691d677163fccac3cb99898ed6da4ece5ae7dc8eff4f08e544a5b274da8e4",
+    "case-20245bdfea274d2e8792a32cb5b7d323/evidence/before.log": "96f98630dfd06cfb3acb7ebdf3e1d42e148b751ab191df8467625b8c78132c28",
+    "case-20245bdfea274d2e8792a32cb5b7d323/evidence/cause.txt": "b38f6994d1133d694a523f27ff2b0b1ba7f4e5ecbfa09f59241f8cc50c9e2042",
+    "case-20245bdfea274d2e8792a32cb5b7d323/evidence/corrected_behavior.txt": "0ee1e3735bba4cb5af7709b4b15ec61faa7f53fcdcff19e633d06b3eea12487f",
+    "case-20245bdfea274d2e8792a32cb5b7d323/evidence/diff.patch": "229c264f8cc8a889d69086085a8ebf8efc57642cf6cff4f152baed3834e4a80f",
+    "case-20245bdfea274d2e8792a32cb5b7d323/evidence/diff_35bc3aa4f85d4b15b19c90de931e223f.diff": "229c264f8cc8a889d69086085a8ebf8efc57642cf6cff4f152baed3834e4a80f",
+    "case-20245bdfea274d2e8792a32cb5b7d323/evidence/diff_35bc3aa4f85d4b15b19c90de931e223f.json": "21533764e57a50830ce30f68111fbd2c3e07a007a95b11f55e6aba6c6f0b4258",
+    "case-20245bdfea274d2e8792a32cb5b7d323/evidence/ev-customer-message-0017-313b53c6.json": "90e2e34616c5a139213d1254dfc2d29ed155414c5640e3d69276c16edc276202",
+    "case-20245bdfea274d2e8792a32cb5b7d323/evidence/ev-diff-0010-9fb485c4.json": "92d0f76d8eefb8dd24d0e0aecde977c0c15ca57b87ce49a9818833f66d881966",
+    "case-20245bdfea274d2e8792a32cb5b7d323/evidence/ev-diff-0011-c32962e6.patch": "229c264f8cc8a889d69086085a8ebf8efc57642cf6cff4f152baed3834e4a80f",
+    "case-20245bdfea274d2e8792a32cb5b7d323/evidence/ev-exit-code-0006-0c95c655.json": "7a78175c650c0d49b85113f67b882cc0aa094daf681c21cbd2f30bb831f06ea4",
+    "case-20245bdfea274d2e8792a32cb5b7d323/evidence/ev-exit-code-0009-afe05518.json": "709df91dba3ad35fab94c13b5d23f366cd85c3a166e96dc862976e6ff59e7fe8",
+    "case-20245bdfea274d2e8792a32cb5b7d323/evidence/ev-pr-package-0016-b3368376.json": "7a0ccca2069448c91ea137f55c2345d42de90178b6d1ee017b386d9a35781900",
+    "case-20245bdfea274d2e8792a32cb5b7d323/evidence/ev-report-0001-96660360.txt": "ae3f25ab60341238f89e6d2f3c86e23215c972801677c00e1ae6ababdf225832",
+    "case-20245bdfea274d2e8792a32cb5b7d323/evidence/ev-test-log-0005-4614e742.log": "554988c33e4be7cabeeef1c46f419baf42cf56b08b350aef490ad5ffebf8f2ba",
+    "case-20245bdfea274d2e8792a32cb5b7d323/evidence/ev-test-log-0008-f937b406.log": "554988c33e4be7cabeeef1c46f419baf42cf56b08b350aef490ad5ffebf8f2ba",
+    "case-20245bdfea274d2e8792a32cb5b7d323/evidence/ev-test-log-0013-d9447daf.log": "96f98630dfd06cfb3acb7ebdf3e1d42e148b751ab191df8467625b8c78132c28",
+    "case-20245bdfea274d2e8792a32cb5b7d323/evidence/ev-test-log-0014-7388778d.log": "586691d677163fccac3cb99898ed6da4ece5ae7dc8eff4f08e544a5b274da8e4",
+    "case-20245bdfea274d2e8792a32cb5b7d323/evidence/ev-test-log-0015-0d5a536e.log": "acc9a057943a8717d87043c762910e0f46994f066cd602b60090ef8359c1fa74",
+    "case-20245bdfea274d2e8792a32cb5b7d323/evidence/ev-test-source-0004-69e324f6.py": "11f877020ac551073f7df296cb471fa88dadca94c7a872b371371f4eb35531c3",
+    "case-20245bdfea274d2e8792a32cb5b7d323/evidence/ev-test-source-0007-b5f1fa41.py": "11f877020ac551073f7df296cb471fa88dadca94c7a872b371371f4eb35531c3",
+    "case-20245bdfea274d2e8792a32cb5b7d323/evidence/ev-triage-record-0002-cf54687d.json": "583ba9527dde0c7a29d2a0cc94c92021fdac964f86e05336e298e31bc80242bf",
+    "case-20245bdfea274d2e8792a32cb5b7d323/evidence/ev-triage-record-0003-8edf009d.json": "31063947563b633c8074bb6dd020521c470e3c11bc5749398c426ba1d6190447",
+    "case-20245bdfea274d2e8792a32cb5b7d323/evidence/ev-verdict-0012-d02539df.json": "01d14c4afef65a41f62abc8d92ed2de9e74eb6672e47565eaeb99fb7625d7d76",
+    "case-20245bdfea274d2e8792a32cb5b7d323/evidence/suite.log": "acc9a057943a8717d87043c762910e0f46994f066cd602b60090ef8359c1fa74",
+    "case-20245bdfea274d2e8792a32cb5b7d323/evidence-manifest.json": "91c7870542ec4a2cb932c79eb09cbba65602ca2f803243b5e9154398a434d7f9",
+    "case-a70a3529004f4e4c983697f1367a7976/acompanhamento-replay.html": "b14aab56e4736f3742200b2de3f91235375b7f0df89d19f2b4e79c70299c4414",
+    "case-a70a3529004f4e4c983697f1367a7976/acompanhamento.html": "ba2c5f86a6ab4496e5f923ad942cc01d3f4530ceab02f6d906a3e6516ae810a9",
+    "case-a70a3529004f4e4c983697f1367a7976/demo-result.json": "37ac203a13f9fd2ffcce3eea048bd4143158b07d4bbdf079a0496e46ac9f9b1d",
+    "case-a70a3529004f4e4c983697f1367a7976/events.jsonl": "ca07c940460b5fdffbcd59d42522e160b7b97e3ef6b6da6d500cef1ee8c99d22",
+    "case-a70a3529004f4e4c983697f1367a7976/evidence/ev-customer-message-0004-029c2485.json": "a68b5e095ccf4695d8ce15f9c5cd439c6c0b7a6faf283b764a3ffc3dc76736e2",
+    "case-a70a3529004f4e4c983697f1367a7976/evidence/ev-report-0001-e1b9a4b2.txt": "bda9cd673ec5fcbb9d4eee2e88a7f72a8119bdc4f4d865c81c18302432488c59",
+    "case-a70a3529004f4e4c983697f1367a7976/evidence/ev-triage-record-0002-9d17eb9e.json": "0ed6f097891364f704ce60215e04718061638e38cfd652c34ccf062570870905",
+    "case-a70a3529004f4e4c983697f1367a7976/evidence/ev-triage-record-0003-03338533.json": "71dc5fe05e13201faa070ab9c4deba6d84c047b25ced6a47aafdc4ef313f4d81",
+    "case-a70a3529004f4e4c983697f1367a7976/evidence-manifest.json": "e9db80a4b4f3501d66f4470dab5a0978acb33306d1b9c9773448d8ba5813e2c7"
+  }
+}

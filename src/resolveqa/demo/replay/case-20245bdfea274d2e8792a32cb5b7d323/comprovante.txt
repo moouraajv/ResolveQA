@@ -1,0 +1,18 @@
+COMPROVANTE DE CORREÇÃO
+Correção verificada
+demonstração com dados simulados
+
+Id do caso: case-20245bdfea274d2e8792a32cb5b7d323
+Data e hora: 08/11/2026 às 12:32:08 UTC
+
+O que você relatou:
+O total da compra continuou em R$ 200,00, quando você esperava R$ 180,00.
+
+O que estava errado:
+O total mostrado era diferente do valor esperado de R$ 180,00.
+
+O que ficou certo:
+Antes: R$ 200,00. Agora: R$ 180,00.
+O total foi corrigido e o resultado foi conferido.
+
+Código de conferência de integridade (não é assinatura digital): E75A-70D6-CBE7-9EEB

@@ -127,3 +127,82 @@ A página e o comprovante são rotulados como demonstração quando o modo é mo
 qualquer evidência do manifesto tem `simulated=True`. O próprio comprovante informa:
 “Código de conferência de integridade (não é assinatura digital)”. Horários
 inválidos no formatador geram `CustomerArtifactError`.
+
+## Demo de palco: dois cenários, um comando
+
+Na raiz do clone, com o ambiente preparado, execute:
+
+```sh
+PYTHONPATH=src .venv/bin/python -B -m resolveqa.demo.palco
+```
+
+O topo sempre identifica **modo mock**, padrão sem rede, ou **modo real (Featherless)**
+com `--real-llm` e credencial/modelo já configurados no ambiente. O comando roda o
+cupom e depois o relato vago. Em cerca de vinte linhas, mostra relato, estados e
+horários UTC reais, RED observado/esperado, resumo do patch, GREEN, veredito com
+motivo, comprovante, página e pacote “PR não publicado”. No relato vago, apresenta
+a pergunta objetiva e informa que não existe patch/comprovante.
+
+Enquanto faltarem APIs na branch, o palco usa automaticamente o loader local do
+`validate_pending`, sem fetch, merge ou instalação. A saída informa explicitamente
+**“Composição: implementações reais de PRs pendentes (Git local, sem merge)”**. Os
+commits são os fixados em `validate_pending.PENDING`; APIs já presentes na branch
+não são substituídas. Os blobs precisam existir no clone (o comando de fetch está
+na seção de validação local acima). Se não existirem, o comando falha com exit 2;
+não troca silenciosamente para replay e não fabrica um resultado. Ao terminar,
+restaura os imports que existiam antes da apresentação.
+
+Para abrir a página local do cupom no navegador:
+
+```sh
+PYTHONPATH=src .venv/bin/python -B -m resolveqa.demo.palco --open-page
+```
+
+O caminho das duas páginas também é sempre impresso. Se o navegador estiver
+indisponível, esses caminhos continuam disponíveis. Não há abertura de URL externa.
+
+### Plano B: gravação incluída no repositório
+
+```sh
+PYTHONPATH=src .venv/bin/python -B -m resolveqa.demo.palco --replay --open-page
+```
+
+A gravação em `src/resolveqa/demo/replay/` vem de uma **execução efetiva do pipeline**
+com LLM mock e etapas reais dos PRs fixados, em **2026-11-08T12:32:03Z** (09h32 de
+Brasília). Os testes de reprodução/verificação realmente executaram: RED exit 1,
+GREEN e suíte exit 0. O relato vago realmente terminou em needs_info. Não é uma
+execução com LLM real: o topo do replay diz **modo mock**.
+
+O aviso **“REPLAY de uma execução gravada em <data e hora> — NÃO É AO VIVO”** aparece
+no terminal e na página identificada de replay. A gravação preserva, sem alterações,
+os eventos e artefatos originais: evidências, fontes dos testes como dados, logs,
+verdict, comprovante, página original e pacote local. Há uma cópia adicional da
+página com o aviso de replay. `index.json` liga os dois casos e registra SHA-256 de
+todos os arquivos. A leitura verifica inventário, hashes, modo e data contra os
+registros e recusa divergências. Usa os horários originais, sem acrescentar eventos,
+regenerar provas ou executar código da gravação.
+
+O replay não chama LLM, não roda testes, não carrega módulos de PRs e não depende
+de Git ou rede. As referências absolutas eventualmente presentes nos registros
+originais são preservadas como evidência; os caminhos apresentados no palco são
+resolvidos para os artefatos existentes na cópia local da gravação.
+
+Para gravar outra execução efetiva em uma **pasta nova**, sem sobrescrever o Plano B:
+
+```sh
+PYTHONPATH=src .venv/bin/python -B -m resolveqa.demo.palco --record-replay src/resolveqa/demo/replay-novo
+PYTHONPATH=src .venv/bin/python -B -m resolveqa.demo.palco --replay src/resolveqa/demo/replay-novo
+```
+
+A gravação só é aceita depois de os dois cenários chegarem a verified/needs_info.
+Pasta existente é recusada antes de executar novamente o pipeline. Nenhuma chave
+real ou chamada ao Featherless foi usada para produzir o Plano B incluído.
+
+```sh
+.venv/bin/python -B -m pytest tests/e2e/test_palco.py
+```
+
+Os testes verificam a saída compacta, a execução mock com rede proibida, a gravação,
+o replay somente de leitura sem pipeline/Git, a abertura exclusiva de página local,
+a recusa de eventos alterados e metadados divergentes e a preservação de gravações
+existentes. O modo real exige opt-in e continua sem ensaio de provedor externo.
