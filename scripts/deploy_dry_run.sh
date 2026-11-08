@@ -55,6 +55,7 @@ PARAMS_FILE="${REPO_ROOT}/dist/parameters-${ENV_NAME}.json"
 REL_PARAMS_FILE="dist/parameters-${ENV_NAME}.json"
 ORIGIN_SECRET="$(python3 -c "import secrets; print(secrets.token_hex(32))")"
 
+install -m 600 /dev/null "${PARAMS_FILE}"
 cat << EOF > "${PARAMS_FILE}"
 [
   {
