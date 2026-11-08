@@ -1,25 +1,34 @@
 """Exercise the command against public stages, or its honest dependency diagnostic."""
+import ast
+import shutil
+import urllib.request
 import hashlib
 import json
 from pathlib import Path
 
 import pytest
 
+from resolveqa.contracts import ReportInput
+from resolveqa.intake import Intake
 from resolveqa.demo import COUPON_REPORT, VAGUE_REPORT, run_demo
 from resolveqa.demo.__main__ import main
+from resolveqa.demo.llm import create_demo_llm
 
 
 @pytest.mark.parametrize('scenario,report,expected', [
     ('coupon', COUPON_REPORT, 'verified'),
     ('vague', VAGUE_REPORT, 'needs_info'),
 ])
-def test_public_pipeline(scenario, report, expected, monkeypatch):
-    import resolveqa.demo.real_llm as real_llm
+def test_public_pipeline(scenario, report, expected, monkeypatch, tmp_path):
     def forbidden(*args, **kwargs):
         pytest.fail("default mock demo attempted network access")
     monkeypatch.setenv("FEATHERLESS_API_KEY", "synthetic-demo-value")
-    monkeypatch.setattr(real_llm, "urlopen", forbidden)
-    result = run_demo(scenario, root=Path(__file__).resolve().parents[2])
+    monkeypatch.setattr(urllib.request.OpenerDirector, "open", forbidden)
+    source = Path(__file__).resolve().parents[2]
+    shutil.copytree(source / 'demo-target', tmp_path / 'demo-target')
+    shutil.copytree(source / 'config', tmp_path / 'config')
+    result = run_demo(scenario, root=tmp_path)
+    assert result.run_dir.is_relative_to(tmp_path)
     assert result.case.report_text == report
     assert result.case.state.value == expected
     assert result.evidence_ids
@@ -54,6 +63,8 @@ def test_public_pipeline(scenario, report, expected, monkeypatch):
         assert result.delivery is None and result.verdict is None
         assert '?' in result.message.text
         assert 'valor' in result.message.text
+        assert result.message.text.endswith('?')
+        assert not result.message.text.endswith('?.')
         assert not list(result.run_dir.glob('evidence/*.diff'))
         assert result.receipt_path is None
         assert not (result.run_dir / 'comprovante.txt').exists()
@@ -75,8 +86,9 @@ def test_public_pipeline(scenario, report, expected, monkeypatch):
     assert manifest['evidence_ids'] == list(result.evidence_ids)
 
 
-def test_real_mode_requires_key_without_printing_it(monkeypatch, capsys):
-    monkeypatch.delenv('FEATHERLESS_API_KEY', raising=False)
+def test_real_mode_requires_key_without_printing_it(monkeypatch, capsys, tmp_path):
+    monkeypatch.setenv('HOME', str(tmp_path))
+    monkeypatch.setenv('FEATHERLESS_API_KEY', 'synthetic-environment-value')
     assert main(['--real-llm']) == 2
     assert 'FEATHERLESS_API_KEY' in capsys.readouterr().err
 
@@ -96,15 +108,37 @@ def test_missing_components_are_explicit(monkeypatch, capsys):
     assert 'resolveqa.triage.engine' in output.err
 
 
-def test_real_transport_omits_provider_error(monkeypatch):
-    from resolveqa.demo.real_llm import RealLLM
-    import resolveqa.demo.real_llm as transport
+def test_real_transport_omits_provider_error(monkeypatch, tmp_path):
+    from resolveqa.llm import LLMAdapter, LLMProviderError, build_delimited_messages
     from urllib.error import URLError
-    monkeypatch.setenv('FEATHERLESS_API_KEY', 'synthetic-demo-value')
+    monkeypatch.setenv('HOME', str(tmp_path))
+    path = tmp_path / '.config/resolveqa/featherless.env'
+    path.parent.mkdir(parents=True)
+    path.write_text('FEATHERLESS_API_KEY=synthetic-demo-value\n')
+    path.chmod(0o600)
+    llm = create_demo_llm(real=True)
+    assert isinstance(llm, LLMAdapter) and llm.use_real
+    assert llm.transport is None and not hasattr(llm, '_credential')
     def unavailable(*args, **kwargs):
         raise URLError('synthetic-demo-value')
-    monkeypatch.setattr(transport, 'urlopen', unavailable)
-    llm = RealLLM('synthetic-model')
-    with pytest.raises(OSError) as error:
-        llm._request('triage', [], None)
+    llm.transport = unavailable
+    with pytest.raises(LLMProviderError) as error:
+        llm.complete('triage', build_delimited_messages('Triage', {'report_text': COUPON_REPORT}),
+                     case=Intake().create(ReportInput(
+                         'client-demo', 'demo-target', 'simulated_chat', COUPON_REPORT)))
     assert 'synthetic-demo-value' not in str(error.value)
+
+
+def test_demo_has_no_custom_transport_or_pending_loader():
+    root = Path(__file__).resolve().parents[2]
+    package = root / 'src/resolveqa/demo'
+    assert not (package / 'real_llm.py').exists()
+    assert not (package / 'validate_pending.py').exists()
+    for path in package.glob('*.py'):
+        tree = ast.parse(path.read_text())
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
+                assert node.func.id != 'exec'
+            if isinstance(node, (ast.Import, ast.ImportFrom)):
+                imports = [node.module or ''] if isinstance(node, ast.ImportFrom) else [n.name for n in node.names]
+                assert not any('validate_pending' in name or name.startswith('urllib') for name in imports)

@@ -9,65 +9,66 @@ PYTHONPATH=src .venv/bin/python -B -m resolveqa.demo --scenario vague
 .venv/bin/python -B -m pytest tests/e2e/test_demo_executor.py
 ```
 
-O padrão é **modo mock**, sem rede nem chave. O comando cria casos novos usando
-Intake, Orchestrator, TriageEngine, ReproductionEngine, FixStage e Verification.
-O mock substitui somente o LLM; execução de testes, correção isolada, decisão do
-verificador, eventos, DeliveryBuilder e ReplyComposer são reais. O caso positivo
-usa o cupom DESC10 e termina em verified com RED/GREEN/suíte verde. O relato vago
-termina em needs_info sem patch nem pacote. O canal e a resposta são simulados.
+O padrão é **modo mock**, sem rede, usando `LLMAdapter(use_real=False)` mesmo se
+`RESOLVEQA_LIVE` existir no ambiente. Intake, Orchestrator, etapas, Delivery e Reply
+são APIs públicas da branch. Não há importação de scripts de desenvolvimento nem
+execução de código Git pelo pacote `resolveqa`.
 
-Os arquivos ficam em `runs/<case_id>/`: eventos append-only, evidências,
-`evidence-manifest.json` com SHA-256 e caminhos, `demo-result.json` com o estado,
-e `delivery/pr-nao-publicado/` quando verified. A saída informa a linha do tempo,
-os ids das evidências, os exit codes e o caminho do pacote. Delivery recebe cópias
-dos logs e diff efetivamente produzidos, nos nomes exigidos por sua API atual.
-O FixStage atual é determinístico para o defeito controlado do cupom.
+Cada execução cria casos novos e grava eventos, evidências, manifesto SHA-256 e
+resumo JSON em `runs/<case_id>/`. O cupom termina em verified somente com decisão
+do verificador; o relato vago termina em needs_info, sem patch/pacote. A resposta
+correta deriva de `triage.expected` após aprovação, sem valor fixo. A pergunta
+conserva seu ponto de interrogação sem o ponto final adicional. O canal e a resposta
+são simulados e rotulados. O pacote local fica identificado como “PR não publicado”.
 
-## Dependências ainda fora da main na criação desta branch
-
-- PR #47: `resolveqa.store.evidence_store.EvidenceStore`
-- PR #49: `resolveqa.triage.engine.TriageEngine`
-- PR #50: `resolveqa.reproduction.engine.ReproductionEngine`
-- PR #52: `resolveqa.fix.engine.FixStage`
-- PR #53: `resolveqa.verification.verifier.Verification`
-
-Sem essas APIs, o comando informa todas as dependências ausentes e sai com 2
-antes de criar casos ou artefatos. Não substitui etapas por resultados fabricados.
-Os dois testes E2E exigem as etapas reais: falham explicitamente enquanto faltarem
-as dependências, sem skip/xfail nem redução de asserções.
-
-## Modo real, somente por opt-in
-
-O transporte opcional usa Featherless via HTTPS e biblioteca padrão. Exige chave
-já presente em `FEATHERLESS_API_KEY` e modelo em `FEATHERLESS_MODEL` ou `--model`:
+## Modo real
 
 ```sh
-PYTHONPATH=src .venv/bin/python -B -m resolveqa.demo --real-llm --model MODELO
+PYTHONPATH=src .venv/bin/python -B -m resolveqa.demo --real-llm
 ```
 
-A chave nunca é passada como argumento, registrada ou impressa. O adaptador
-público continua validando o conteúdo e contando chamadas; erros de transporte
-omitem o corpo da resposta. Sem a flag, mesmo com chave no ambiente, não há chamada
-real. Nenhuma chamada real foi feita na validação deste executor. Não há leitura
-de arquivos de credenciais. O modo real não altera o FixStage determinístico.
+O único provedor é o `LLMAdapter(use_real=True)` integrado na main pelo #46:
+transporte sem redirects, retries e fallback conforme `src/resolveqa/llm/config.json`.
+A chave é lida pelo adaptador somente de `~/.config/resolveqa/featherless.env`, com
+permissão 0600. A demo não lê chave de variável de ambiente nem guarda credencial
+em instância própria. Sem arquivo/chave válida, o modo real falha claramente antes
+de carregar etapas. Não há transporte HTTP próprio no pacote demo e não há flag
+própria de modelo; os modelos vêm da configuração pública do adaptador.
 
-Exit codes: 0 = cenários atingiram os estados esperados; 1 = cenário terminou em
-outro estado; 2 = dependência/configuração/erro operacional impediu a execução.
+## Dependências ainda pendentes
 
-## Validação local antes dos merges
+Enquanto faltarem APIs de reprodução #50, correção #52 ou verificação #53 na main,
+o comando normal lista os componentes ausentes e retorna 2, sem fabricar resultados.
+O modo ao vivo requer os merges; o replay de palco é o Plano B. Store #47, adaptador
+#46 e triagem #49 já estão integrados na main usada nesta revisão.
 
-O harness opcional carrega em memória os cinco módulos reais de commits fixados,
-sem sobrescrever ou versionar arquivos das outras trilhas. Usa o orquestrador da
-branch e executa os mesmos testes E2E, sem substituir etapas nem fabricar verdicts.
-Não é o caminho de execução da demo e não mascara a falta de dependências na main.
+## Validação somente para desenvolvimento
 
 ```sh
-git fetch origin pull/47/head:refs/remotes/origin/pr-47 pull/49/head:refs/remotes/origin/pr-49 pull/50/head:refs/remotes/origin/pr-50 pull/52/head:refs/remotes/origin/pr-52 pull/53/head:refs/remotes/origin/pr-53
-PYTHONPATH=src .venv/bin/python -B -m resolveqa.demo.validate_pending --run-demo --full-suite
+PYTHONPATH=src .venv/bin/python -B scripts/dev_validate_pending.py --full-suite
 ```
 
-Os SHAs estão em `validate_pending.py`. Mudanças posteriores nos PRs exigem nova
-validação. A suíte normal continua expondo dependências ausentes até seus merges.
+O script fica **fora de src/** e nunca é importado pela aplicação. Ele usa somente
+blobs Git locais de commits fixados, preenchendo apenas módulos ausentes. Não faz
+fetch nem merge e não substitui APIs presentes na main. Os snapshots são escritos
+num diretório temporário; `module.__file__` aponta para o arquivo real do snapshot
+durante toda a validação. A saída diz “SOMENTE DESENVOLVIMENTO”. Não se trata de uma
+execução da demo sobre main já integrada nem de um caminho de apresentação.
+
+Os blobs precisam existir no clone. Nenhuma chamada real ao provedor é necessária:
+
+```sh
+git fetch origin pull/50/head:refs/remotes/origin/pr-50 pull/52/head:refs/remotes/origin/pr-52 pull/53/head:refs/remotes/origin/pr-53
+PYTHONPATH=src .venv/bin/python -B scripts/dev_validate_pending.py --run-demo
+```
+
+Os testes E2E montam o alvo e a configuração em `tmp_path`; não gravam runs no clone.
+Testes do modo real usam somente HOME temporário vazio ou arquivo 0600 com chave
+sintética e transporte de teste. O live opcional da suíte permanece desabilitado
+quando RESOLVEQA_LIVE não está definido.
+
+Exit codes: 0 = estados esperados; 1 = cenário terminou em outro estado; 2 =
+configuração, dependência ou erro operacional impediu a execução.
 
 ## Comprovante de correção e acompanhamento
 
