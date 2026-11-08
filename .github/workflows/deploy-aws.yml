@@ -1,0 +1,51 @@
+name: Deploy AWS (backend)
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+concurrency:
+  group: deploy-aws-backend
+  cancel-in-progress: false
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install test deps
+        run: pip install pytest
+      - name: Unit/core tests
+        run: PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python -m pytest -q
+
+  deploy:
+    needs: test
+    runs-on: ubuntu-latest
+    environment: aws-prod
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ secrets.AWS_REGION }}
+      - name: Deploy backend stack
+        env:
+          AWS_REGION: ${{ secrets.AWS_REGION }}
+          AWS_STACK_NAME: ${{ secrets.AWS_STACK_NAME }}
+          AWS_ARTIFACT_BUCKET: ${{ secrets.AWS_ARTIFACT_BUCKET }}
+          AWS_VPC_ID: ${{ vars.AWS_VPC_ID }}
+          AWS_SUBNET_ID: ${{ vars.AWS_SUBNET_ID }}
+          AWS_INSTANCE_TYPE: ${{ vars.AWS_INSTANCE_TYPE }}
+        run: bash scripts/deploy_aws.sh
