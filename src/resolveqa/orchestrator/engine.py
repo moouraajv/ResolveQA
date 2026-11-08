@@ -13,6 +13,7 @@ from resolveqa.contracts import (
     BlockedReason,
     BlockedTerminalReason,
     CaseState,
+    ContractValidationError,
     Event,
     EventSource,
     EventType,
@@ -34,7 +35,7 @@ from resolveqa.contracts import (
     VerificationStage,
 )
 from resolveqa.orchestrator.limits import OrchestratorLimits, load_orchestrator_limits
-from resolveqa.store.events import EventStore, reason_for_terminal
+from resolveqa.store.events import EventStore, encode_blocked_event_reason, reason_for_terminal
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_LIMITS_PATH = REPO_ROOT / "config" / "limits.json"
@@ -60,6 +61,13 @@ def _is_llm_limit_exceeded(exc: BaseException) -> bool:
     if type(exc).__name__ == "LLMLimitExceededError":
         return True
     return getattr(exc, "reason", None) == BlockedReason.LIMIT_EXCEEDED.value
+
+
+def _is_stage_output_error(exc: BaseException) -> bool:
+    """True for typed stage/LLM output failures that must close the case."""
+    if isinstance(exc, ContractValidationError):
+        return True
+    return type(exc).__name__ == "LLMOutputError"
 
 
 class OrchestratorError(RuntimeError):
@@ -351,7 +359,7 @@ class Orchestrator:
         source: EventSource,
         call: Callable[[], object],
     ) -> object | _StageFailure:
-        """Invoke a stage; wrap operational/limit terminals, re-raise programming errors."""
+        """Invoke a stage; terminalize known failures; unexpected errors close then re-raise."""
         try:
             return call()
         except _OPERATIONAL_ERRORS as err:
@@ -374,6 +382,37 @@ class Orchestrator:
                         detail=str(err) or "limit_exceeded",
                     )
                 )
+            if _is_stage_output_error(err):
+                detail = str(err) or type(err).__name__
+                if source == EventSource.FIX:
+                    return _StageFailure(
+                        self._transition(
+                            case,
+                            CaseState.BLOCKED,
+                            source=source,
+                            terminal_reason=BlockedTerminalReason(
+                                code=BlockedReason.PATCH_REJECTED,
+                                detail=detail,
+                            ),
+                        )
+                    )
+                return _StageFailure(
+                    self._transition(
+                        case,
+                        CaseState.INFRA_ERROR,
+                        source=source,
+                        terminal_reason=InfraErrorTerminalReason(detail=detail),
+                    )
+                )
+            # Unexpected exception: close the case before propagating so it is not stuck.
+            self._transition(
+                case,
+                CaseState.INFRA_ERROR,
+                source=source,
+                terminal_reason=InfraErrorTerminalReason(
+                    detail=f"unexpected stage error: {type(err).__name__}: {err}"
+                ),
+            )
             raise
 
     @staticmethod
@@ -395,6 +434,10 @@ class Orchestrator:
     def _block_limit_exceeded(self, case: RunState, detail: str) -> RunState:
         ts = self.clock()
         seq = self.store.next_seq(case.case_id)
+        terminal_reason = BlockedTerminalReason(
+            code=BlockedReason.LIMIT_EXCEEDED,
+            detail=detail,
+        )
         self.store.append(
             Event(
                 event_id=self._new_event_id(),
@@ -403,17 +446,14 @@ class Orchestrator:
                 ts=ts,
                 source=EventSource.ORCHESTRATOR,
                 type=EventType.LIMIT_REACHED,
-                reason=BlockedReason.LIMIT_EXCEEDED.value,
+                reason=encode_blocked_event_reason(terminal_reason, attempts=case.attempts),
             )
         )
         return self._transition(
             case,
             CaseState.BLOCKED,
             source=EventSource.ORCHESTRATOR,
-            terminal_reason=BlockedTerminalReason(
-                code=BlockedReason.LIMIT_EXCEEDED,
-                detail=detail,
-            ),
+            terminal_reason=terminal_reason,
         )
 
     def _complete_verified(self, case: RunState, verdict: Verdict) -> RunState:
@@ -469,7 +509,16 @@ class Orchestrator:
         )
         event_reason = reason
         if terminal_reason is not None:
-            event_reason = reason_for_terminal(terminal_reason)
+            attempts_for_event = None
+            if (
+                isinstance(terminal_reason, BlockedTerminalReason)
+                and terminal_reason.code == BlockedReason.LIMIT_EXCEEDED
+            ):
+                attempts_for_event = case.attempts
+            event_reason = reason_for_terminal(
+                terminal_reason,
+                attempts=attempts_for_event,
+            )
         self.store.append(
             Event(
                 event_id=self._new_event_id(),

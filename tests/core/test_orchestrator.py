@@ -13,6 +13,7 @@ from resolveqa.contracts import (
     BlockedReason,
     CaseState,
     ChannelType,
+    ContractValidationError,
     EventType,
     NeedsInfo,
     Patch,
@@ -24,8 +25,10 @@ from resolveqa.contracts import (
     VerdictResult,
 )
 from resolveqa.contracts import TestRun as ContractTestRun
+from resolveqa.llm import LLMOutputError
 from resolveqa.orchestrator import Orchestrator, OrchestratorError, OrchestratorLimits
 from resolveqa.store import EventStore
+from resolveqa.store.events import decode_blocked_event_reason
 
 
 def _case(
@@ -171,14 +174,18 @@ class _LabeledFix:
         self,
         result: Any = None,
         *,
+        error: BaseException | None = None,
         return_verified_case: bool = False,
     ) -> None:
         self.result: Any = _patch() if result is None else result
+        self.error = error
         self.return_verified_case = return_verified_case
         self.calls = 0
 
     def run(self, case: RunState, triage: TriageRecord, repro: ReproResult) -> Any:
         self.calls += 1
+        if self.error is not None:
+            raise self.error
         if self.return_verified_case:
             return replace(case, state=CaseState.VERIFIED)
         return self.result
@@ -354,7 +361,10 @@ class TestOrchestrator(unittest.TestCase):
         self.assertTrue(any(e.type == EventType.LIMIT_REACHED for e in events))
         blocked = [e for e in events if e.to_state == CaseState.BLOCKED]
         self.assertEqual(len(blocked), 1)
-        self.assertEqual(blocked[0].reason, BlockedReason.LIMIT_EXCEEDED.value)
+        blocked_reason, blocked_attempts = decode_blocked_event_reason(blocked[0].reason or "")
+        self.assertEqual(blocked_reason.code, BlockedReason.LIMIT_EXCEEDED)
+        self.assertIsNotNone(blocked_reason.detail)
+        self.assertEqual(blocked_attempts, Attempts(fix=2, llm_calls=0))
 
     def test_llm_limit_blocks_without_calling_stages(self) -> None:
         orch, triage_d, repro_d, fix_d, ver_d = self._build(
@@ -419,12 +429,15 @@ class TestOrchestrator(unittest.TestCase):
         self.assertEqual(final.terminal_reason.detail, "stage timed out")  # type: ignore[union-attr]
 
     def test_programming_error_from_stage_propagates(self) -> None:
+        """Unexpected errors still propagate, but only after closing as infra_error."""
         triage = _LabeledTriage(error=TypeError("bug in triage double"))
         orch, _, _, _, _ = self._build(triage_double=triage)
         with self.assertRaises(TypeError):
             orch.run(_case(case_id="case-type-error"))
         events = self.store.list_events("case-type-error")
-        self.assertEqual(events[-1].to_state, CaseState.TRIAGING)
+        self.assertEqual(events[-1].to_state, CaseState.INFRA_ERROR)
+        self.assertEqual(events[-1].from_state, CaseState.TRIAGING)
+        self.assertIn("TypeError", events[-1].reason or "")
 
     def _assert_no_verified_outcome(self, case_id: str) -> None:
         events = self.store.list_events(case_id)
@@ -548,6 +561,62 @@ class TestOrchestrator(unittest.TestCase):
         self.assertIsNot(final.attempts, original_attempts)
         with self.assertRaises(FrozenInstanceError):
             original_attempts.fix = 9  # type: ignore[misc]
+
+    def test_stage_llm_output_error_terminates_case_not_stuck(self) -> None:
+        """QA achado 1: LLMOutputError must close the case; rerun must not see stale history."""
+        triage = _LabeledTriage(
+            error=LLMOutputError("malformed triage JSON", purpose="triage")
+        )
+        orch, triage_d, _, _, _ = self._build(triage_double=triage)
+        initial = _case(case_id="case-llm-output-err")
+        final = orch.run(initial)
+        self.assertEqual(final.state, CaseState.INFRA_ERROR)
+        self.assertIn("malformed triage JSON", final.terminal_reason.detail)  # type: ignore[union-attr]
+        self.assertEqual(triage_d.calls, 1)
+        events = self.store.list_events("case-llm-output-err")
+        self.assertEqual(events[-1].to_state, CaseState.INFRA_ERROR)
+        self.assertEqual(events[-1].from_state, CaseState.TRIAGING)
+
+        before = list(events)
+        with self.assertRaises(OrchestratorError) as ctx:
+            orch.run(initial)
+        self.assertIn("incompatible", str(ctx.exception).lower())
+        after = self.store.list_events("case-llm-output-err")
+        self.assertEqual(len(before), len(after))
+        rebuilt = self.store.reconstruct_state(initial)
+        self.assertEqual(rebuilt.state, CaseState.INFRA_ERROR)
+
+    def test_fix_contract_validation_error_becomes_patch_rejected(self) -> None:
+        fix = _LabeledFix(error=ContractValidationError("invalid patch payload"))
+        orch, _, _, fix_d, ver_d = self._build(fix_double=fix)
+        final = orch.run(_case(case_id="case-fix-contract-err"))
+        self.assertEqual(final.state, CaseState.BLOCKED)
+        self.assertEqual(final.terminal_reason.code, BlockedReason.PATCH_REJECTED)  # type: ignore[union-attr]
+        self.assertIn("invalid patch payload", final.terminal_reason.detail)  # type: ignore[union-attr]
+        self.assertEqual(fix_d.calls, 1)
+        self.assertEqual(ver_d.calls, 0)
+
+    def test_limit_block_reconstruct_preserves_attempts_and_detail(self) -> None:
+        """QA achado 3: reconstruct of limit-blocked case keeps attempts and detail."""
+        orch, _, _, _, _ = self._build(
+            verdicts=[
+                _verdict_rejected("patch insufficient"),
+                _verdict_rejected("patch still insufficient"),
+            ],
+            limits=OrchestratorLimits(max_fix_attempts=2, max_llm_calls=12),
+        )
+        initial = _case(case_id="case-limit-reconstruct")
+        final = orch.run(initial)
+        self.assertEqual(final.state, CaseState.BLOCKED)
+        self.assertEqual(final.attempts.fix, 2)
+        self.assertIsNotNone(final.terminal_reason.detail)  # type: ignore[union-attr]
+
+        rebuilt = self.store.reconstruct_state(initial)
+        self.assertEqual(rebuilt.state, CaseState.BLOCKED)
+        self.assertEqual(rebuilt.attempts.fix, 2)
+        self.assertEqual(rebuilt.attempts.llm_calls, final.attempts.llm_calls)
+        self.assertEqual(rebuilt.terminal_reason.code, BlockedReason.LIMIT_EXCEEDED)  # type: ignore[union-attr]
+        self.assertEqual(rebuilt.terminal_reason.detail, final.terminal_reason.detail)  # type: ignore[union-attr]
 
 
 if __name__ == "__main__":
