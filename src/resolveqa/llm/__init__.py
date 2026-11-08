@@ -16,7 +16,7 @@ from .adapter import (
     delimit_untrusted_data,
     load_featherless_api_key,
     load_max_llm_calls,
-     record_llm_calls_in_state,
+    record_llm_calls_in_state,
     redact_secrets,
     validate_llm_output,
 )
