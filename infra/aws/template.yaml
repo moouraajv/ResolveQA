@@ -245,7 +245,7 @@ Resources:
 
             if [ "$READY" -ne 1 ]; then
               echo "[ERROR] Backend service failed to become ready within timeout." >&2
-              exit 1
+              catch_error 1 "$LINENO"
             fi
 
             # Signal CloudFormation that instance bootstrap is complete and healthy
