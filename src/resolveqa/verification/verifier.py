@@ -1285,7 +1285,9 @@ class Verification:
                     if not any(runs_dir.iterdir()):
                         runs_dir.rmdir()
 
-    def _exec_test_run(self, workdir: Path, command: str) -> tuple[TestRun, ExecResult]:
+    def _exec_test_run(
+        self, workdir: Path, command: str, recorded_command: Optional[str] = None
+    ) -> tuple[TestRun, ExecResult]:
         try:
             rel_workdir = workdir.resolve().relative_to(self.base_root.resolve()).as_posix()
         except ValueError:
@@ -1299,7 +1301,7 @@ class Verification:
         )
         return (
             TestRun(
-                command=command,
+                command=recorded_command if recorded_command else command,
                 exit_code=exec_res.exit_code,
                 duration_s=duration_s,
                 log_ref=combined_log,
@@ -1724,7 +1726,9 @@ class Verification:
 
             # 2. Execute `after` test run
             if after_test_file.is_file():
-                after_run, after_exec = self._exec_test_run(after_dir, after_test_cmd)
+                after_run, after_exec = self._exec_test_run(
+                    after_dir, after_test_cmd, recorded_command=single_test_cmd
+                )
             else:
                 after_run = self._sentinel_test_run(
                     single_test_cmd,
