@@ -108,7 +108,7 @@ class BackendPackagingValidationTest(unittest.TestCase):
 
         # CloudFront HTTPS enforcement and CacheDisabled policy
         self.assertIn("ViewerProtocolPolicy: redirect-to-https", content)
-        self.assertIn("4135ea2d-6df8-44a3-9df3-44184ec0b026", content)
+        self.assertIn("4135ea2d-6df8-44a3-9df3-4b5a84be39ad", content)
 
     def test_deploy_docs_clarifications_and_cost_breakdown(self) -> None:
         self.assertTrue(DEPLOY_DOC_PATH.is_file(), "docs/deploy-backend.md must exist")
