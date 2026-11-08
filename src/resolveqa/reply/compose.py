@@ -1,4 +1,4 @@
-"""Compose honest customer messages for the same intake channel (RF-09)."""
+"""Compose honest customer messages for the same intake channel (RF-09, #17, #25)."""
 
 from __future__ import annotations
 
@@ -13,6 +13,7 @@ from resolveqa.contracts import (
     RunState,
     TERMINAL_STATES,
 )
+from resolveqa.playbook import Playbook, ReplyTone
 
 
 class ReplyComposeError(ValueError):
@@ -38,8 +39,37 @@ def _verified_event_seq(events: Sequence[Event]) -> int | None:
     return None
 
 
+def _apply_tone(base: str, *, tone: ReplyTone, state: CaseState) -> str:
+    """Choose wording template; facts (behavior/state) stay untouched."""
+    if state == CaseState.VERIFIED:
+        if tone == ReplyTone.FRIENDLY:
+            return base.replace("Corrigimos o problema.", "Pronto — já corrigimos isso.")
+        if tone == ReplyTone.FORMAL:
+            return base.replace(
+                "Corrigimos o problema.",
+                "Informamos que a correção foi concluída.",
+            )
+        return base
+    if tone == ReplyTone.FRIENDLY:
+        return base.replace("Andamento:", "Atualização:")
+    if tone == ReplyTone.FORMAL:
+        return base.replace("Andamento:", "Comunicado de andamento:")
+    return base
+
+
+def _clip(text: str, max_chars: int) -> str:
+    if len(text) <= max_chars:
+        return text
+    if max_chars <= 3:
+        return text[:max_chars]
+    return text[: max_chars - 3].rstrip() + "..."
+
+
 class ReplyComposer:
     """Implements ReplyStage.compose without sending until contract rules pass."""
+
+    def __init__(self, playbook: Playbook | None = None) -> None:
+        self.playbook = playbook
 
     def compose(
         self,
@@ -48,6 +78,7 @@ class ReplyComposer:
         *,
         events: Iterable[Event] | None = None,
         sent_after_event_seq: int | None = None,
+        playbook: Playbook | None = None,
     ) -> CustomerMessage:
         if not isinstance(case, RunState):
             raise ReplyComposeError(
@@ -61,6 +92,10 @@ class ReplyComposer:
             raise ReplyComposeError(
                 "infra_error must not produce a customer bug/progress message (RFC §4)."
             )
+
+        book = playbook if playbook is not None else self.playbook
+        tone = book.reply_tone if book is not None else ReplyTone.NEUTRAL
+        max_chars = book.reply_max_chars if book is not None else 500
 
         facts = outcome if outcome is not None else ReplyOutcome()
         event_list = list(events or ())
@@ -86,9 +121,14 @@ class ReplyComposer:
                 raise ReplyComposeError(
                     "verified replies must cite the corrected behavior."
                 )
-            text = (
-                f"Corrigimos o problema. Comportamento esperado agora: {behavior}."
-            )
+            # Facts stay in the same fields regardless of tone.
+            base = f"Corrigimos o problema. Comportamento esperado agora: {behavior}."
+            text = _clip(_apply_tone(base, tone=tone, state=case.state), max_chars)
+            if behavior not in text and behavior[: max(1, max_chars // 2)] not in text:
+                # max_chars clipped the fact — still require the fact to appear when possible
+                raise ReplyComposeError(
+                    "reply.max_chars is too small to include the corrected behavior fact."
+                )
             return CustomerMessage(
                 channel=case.channel,
                 text=text,
@@ -98,13 +138,13 @@ class ReplyComposer:
         if case.state == CaseState.NEEDS_INFO:
             question = (facts.support_question or "").strip()
             if not question and case.terminal_reason is not None:
-                question = str(getattr(case.terminal_reason, "question_to_support", "") or "").strip()
+                question = str(
+                    getattr(case.terminal_reason, "question_to_support", "") or ""
+                ).strip()
             if not question:
                 question = "precisamos de mais informações para continuar"
-            text = (
-                "Andamento: ainda não concluímos a correção — "
-                f"{question}."
-            )
+            base = f"Andamento: ainda não concluímos a correção — {question}."
+            text = _clip(_apply_tone(base, tone=tone, state=case.state), max_chars)
             seq = 0 if sent_after_event_seq is None else sent_after_event_seq
             return CustomerMessage(
                 channel=case.channel,
@@ -121,7 +161,8 @@ class ReplyComposer:
                     detail = getattr(code, "value", str(code))
             if not detail:
                 detail = "o caso ficou bloqueado e segue em análise interna"
-            text = f"Andamento: ainda não há correção publicada — {detail}."
+            base = f"Andamento: ainda não há correção publicada — {detail}."
+            text = _clip(_apply_tone(base, tone=tone, state=case.state), max_chars)
             seq = 0 if sent_after_event_seq is None else sent_after_event_seq
             return CustomerMessage(
                 channel=case.channel,
@@ -130,5 +171,3 @@ class ReplyComposer:
             )
 
         raise ReplyComposeError(f"Unhandled terminal state: {case.state.value}")
-
-

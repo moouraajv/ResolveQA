@@ -103,10 +103,13 @@ class TestDeliveryLocalPackage(unittest.TestCase):
                 "suite.log",
                 "limits.json",
                 "verdict.json",
+                "CHANGELOG.md",
                 "MANIFEST.json",
             ]:
                 self.assertTrue((package / name).is_file(), name)
                 self.assertGreater((package / name).stat().st_size, 0)
+            self.assertTrue((package / "technical_notes" / f"{case.case_id}.md").is_file())
+            self.assertTrue((package / "kb_drafts" / f"{case.case_id}.md").is_file())
 
             report = (package / "report.md").read_text(encoding="utf-8")
             self.assertIn("R$ 180", report)

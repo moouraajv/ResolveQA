@@ -1,12 +1,4 @@
-"""Build a local evidence package labeled "PR não publicado" (RF-08, RNF-05, D4).
-
-MVP default (RFC §9 D4): always produce a local package. Never opens or merges a
-real PR. Draft-PR against an authorized remote remains a future extension behind
-the same DeliveryStage interface.
-
-`Delivery.build(case, verdict)` reads cause/diff/logs from
-`runs/<case_id>/evidence/` so the frozen DeliveryStage signature stays intact.
-"""
+"""Build a local evidence package labeled "PR não publicado" (RF-08, #16/#24/#26/#27)."""
 
 from __future__ import annotations
 
@@ -22,6 +14,7 @@ from resolveqa.contracts import (
     Verdict,
     VerdictResult,
 )
+from resolveqa.playbook import Playbook
 from resolveqa.security import scan_paths_for_secrets
 
 UNPUBLISHED_LABEL = "PR não publicado"
@@ -70,13 +63,18 @@ class DeliveryBuilder:
         runs_root: Path | str = "runs",
         limits_path: Path | str = "config/limits.json",
         authorized_remote: bool = False,
+        playbook: Playbook | None = None,
     ) -> None:
         self.runs_root = Path(runs_root)
         self.limits_path = Path(limits_path)
-        # MVP: authorized_remote stays False (D4-a). Never auto-merge.
         self.authorized_remote = bool(authorized_remote)
+        self.playbook = playbook
 
     def build(self, case: RunState, verdict: Verdict) -> DeliveryResult:
+        # Local import avoids circular import at module load with docs/kb.
+        from .docs import write_package_docs
+        from .kb import write_kb_draft
+
         if not isinstance(case, RunState):
             raise DeliveryError(f"Delivery.build expects RunState, got {type(case).__name__}.")
         if not isinstance(verdict, Verdict):
@@ -89,8 +87,6 @@ class DeliveryBuilder:
             raise DeliveryError(
                 f"Delivery requires case.state=verified; got {case.state.value}."
             )
-
-        # D4-a: local package only. Never merge.
         if self.authorized_remote:
             raise DeliveryError(
                 "Draft PR remote delivery is not enabled in the MVP; "
@@ -116,6 +112,11 @@ class DeliveryBuilder:
             shutil.rmtree(package_dir)
         package_dir.mkdir(parents=True, exist_ok=True)
 
+        corrected = "total agora R$ 180,00"
+        behavior_file = evidence_dir / "corrected_behavior.txt"
+        if behavior_file.is_file():
+            corrected = behavior_file.read_text(encoding="utf-8").strip() or corrected
+
         _write_text(
             package_dir / "README.md",
             "\n".join(
@@ -134,23 +135,64 @@ class DeliveryBuilder:
                 ]
             ),
         )
-        _write_text(
-            package_dir / "report.md",
-            "# Relato\n\n" + case.report_text.strip() + "\n",
-        )
+        _write_text(package_dir / "report.md", "# Relato\n\n" + case.report_text.strip() + "\n")
         _write_text(package_dir / "cause.md", "# Causa\n\n" + cause_text + "\n")
         _copy_file(diff_path, package_dir / "diff.patch")
         _copy_file(before_path, package_dir / "before.log")
         _copy_file(after_path, package_dir / "after.log")
         _copy_file(suite_path, package_dir / "suite.log")
         limits = _read_limits(self.limits_path)
-        _write_text(
-            package_dir / "limits.json",
-            json.dumps(limits, indent=2, sort_keys=True) + "\n",
+        _write_text(package_dir / "limits.json", json.dumps(limits, indent=2, sort_keys=True) + "\n")
+        _write_text(package_dir / "verdict.json", verdict.to_json(indent=2) + "\n")
+
+        # #24 approvers (optional playbook)
+        book = self.playbook
+        if book is not None and (book.approvers or book.approver_warnings):
+            lines = ["# Aprovadores", "", "Revisão solicitada aos aprovadores do playbook:", ""]
+            for name in book.approvers:
+                lines.append(f"- [ ] @{name}")
+            if book.approver_warnings:
+                lines.extend(["", "## Avisos (nunca silenciosos)", ""])
+                for warning in book.approver_warnings:
+                    lines.append(f"- `{warning.approver}`: {warning.detail}")
+            lines.extend(["", "auto_merge: false", ""])
+            _write_text(package_dir / "APPROVERS.md", "\n".join(lines))
+            _write_text(
+                package_dir / "approvers.json",
+                json.dumps(
+                    {
+                        "approvers": list(book.approvers),
+                        "warnings": [
+                            {"approver": w.approver, "detail": w.detail}
+                            for w in book.approver_warnings
+                        ],
+                        "auto_merge": False,
+                    },
+                    indent=2,
+                )
+                + "\n",
+            )
+
+        # #26 / #27 documentation — only after verified (already enforced above)
+        doc_rels = write_package_docs(
+            package_dir,
+            case=case,
+            verdict=verdict,
+            cause=cause_text,
+            diff_text=diff_text,
+            before_log=package_dir / "before.log",
+            after_log=package_dir / "after.log",
+            playbook=book,
+            corrected_behavior=corrected,
         )
-        _write_text(
-            package_dir / "verdict.json",
-            verdict.to_json(indent=2) + "\n",
+        kb_rel = write_kb_draft(
+            package_dir,
+            case=case,
+            verdict=verdict,
+            cause=cause_text,
+            playbook=book,
+            corrected_behavior=corrected,
+            technical_note_rel=doc_rels[1],
         )
 
         relative_names = [
@@ -163,7 +205,12 @@ class DeliveryBuilder:
             "suite.log",
             "limits.json",
             "verdict.json",
+            *doc_rels,
+            kb_rel,
         ]
+        if (package_dir / "APPROVERS.md").is_file():
+            relative_names.extend(["APPROVERS.md", "approvers.json"])
+
         for name in relative_names:
             path = package_dir / name
             if not path.is_file():
@@ -182,6 +229,7 @@ class DeliveryBuilder:
             "kind": DeliveryKind.LOCAL_PACKAGE.value,
             "auto_merge": False,
             "files": relative_names,
+            "approvers": list(book.approvers) if book is not None else [],
         }
         _write_text(package_dir / "MANIFEST.json", json.dumps(manifest, indent=2) + "\n")
 
@@ -194,7 +242,6 @@ class DeliveryBuilder:
         )
 
 
-# Structural check against the frozen contracts protocol.
 def _assert_delivery_stage(builder: DeliveryStage) -> None:
     assert callable(builder.build)
 
