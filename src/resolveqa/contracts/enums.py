@@ -1,4 +1,4 @@
-"""Enumerations defined in RFC-0001 §3."""
+"""Enumerations defined in RFC-0001 §3 and §4."""
 
 from enum import Enum
 
@@ -26,6 +26,13 @@ TERMINAL_STATES = frozenset({
     CaseState.BLOCKED,
     CaseState.INFRA_ERROR,
 })
+
+
+class BlockedReason(str, Enum):
+    """Structured terminal reasons for CaseState.BLOCKED (RFC-0001 §4)."""
+    LIMIT_EXCEEDED = "limit_exceeded"
+    NOT_REPRODUCED = "not_reproduced"
+    PATCH_REJECTED = "patch_rejected"
 
 
 class ChannelType(str, Enum):
