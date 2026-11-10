@@ -328,6 +328,13 @@ class IntakeRequestHandler(BaseHTTPRequestHandler):
                 outcome,
                 events=self._load_case_events(case_id),
             )
+        except (ContractValidationError, OSError, UnicodeDecodeError):
+            status, body, ctype = _error(
+                "case event log is unavailable or invalid",
+                HTTPStatus.INTERNAL_SERVER_ERROR,
+            )
+            self._write(status, body, ctype)
+            return
         except ReplyComposeError as err:
             status, body, ctype = _error(str(err))
             self._write(status, body, ctype)
