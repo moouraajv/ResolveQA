@@ -41,6 +41,8 @@ class Reports:
     def pytest_collectreport(self, report):
         if report.failed:
             self.data['errors'] += 1
+        elif report.skipped:
+            self.data['skipped'] += 1
 plugin = Reports()
 code = pytest.main(['-q', '-p', 'no:cacheprovider', '--', sys.argv[1]], plugins=[plugin])
 print('RQA_RESULT=' + json.dumps(plugin.data), flush=True)
