@@ -40,12 +40,14 @@ class TimelineEntry:
             "evidence_refs": list(self.evidence_refs),
             "is_replay": self.is_replay,
         }
+        label = f"{self.type.value} · {self.ts} · origem={self.source.value}"
+        if self.from_state is not None and self.to_state is not None:
+            label += f" · {self.from_state.value} → {self.to_state.value}"
         if self.is_replay:
             payload["original_ts"] = self.original_ts
             payload["replay_case_id"] = self.replay_case_id
-            payload["label"] = f"Replay · horário do run original: {self.original_ts}"
-        else:
-            payload["label"] = f"{self.type.value} · {self.ts} · origem={self.source.value}"
+            label += f" · Replay · horário do run original: {self.original_ts}"
+        payload["label"] = label
         return payload
 
 
