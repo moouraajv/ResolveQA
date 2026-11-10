@@ -70,7 +70,7 @@ quando RESOLVEQA_LIVE não está definido.
 Exit codes: 0 = estados esperados; 1 = cenário terminou em outro estado; 2 =
 configuração, dependência ou erro operacional impediu a execução.
 
-Os SHAs estão em `validate_pending.py`. Mudanças posteriores nos PRs exigem nova
+Os SHAs estão em `scripts/dev_validate_pending.py`. Mudanças posteriores nos PRs exigem nova
 validação. A suíte normal continua expondo dependências ausentes até seus merges.
 
 ## Comprovante de correção e acompanhamento
@@ -143,14 +143,12 @@ horários UTC reais, RED observado/esperado, resumo do patch, GREEN, veredito co
 motivo, comprovante, página e pacote “PR não publicado”. No relato vago, apresenta
 a pergunta objetiva e informa que não existe patch/comprovante.
 
-Enquanto faltarem APIs na branch, o palco usa automaticamente o loader local do
-`validate_pending`, sem fetch, merge ou instalação. A saída informa explicitamente
-**“Composição: implementações reais de PRs pendentes (Git local, sem merge)”**. Os
-commits são os fixados em `validate_pending.PENDING`; APIs já presentes na branch
-não são substituídas. Os blobs precisam existir no clone (o comando de fetch está
-na seção de validação local acima). Se não existirem, o comando falha com exit 2;
-não troca silenciosamente para replay e não fabrica um resultado. Ao terminar,
-restaura os imports que existiam antes da apresentação.
+O palco carrega somente as APIs públicas da branch (triagem, reprodução, correção e
+verificação) e informa **“Composição: APIs públicas disponíveis na branch”**. Não há
+loader de PRs pendentes: se algum componente faltar, o comando falha com exit 2,
+não troca silenciosamente para replay e não fabrica um resultado. Com `--real-llm`,
+o LLM é criado por `create_demo_llm`, igual ao executor `python -m resolveqa.demo`
+(chave em `~/.config/resolveqa/featherless.env`, modelo de `llm/config.json`).
 
 Para abrir a página local do cupom no navegador:
 

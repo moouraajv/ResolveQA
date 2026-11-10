@@ -6,7 +6,6 @@ from datetime import datetime
 import hashlib
 from html import escape
 import json
-import os
 from pathlib import Path, PurePosixPath
 import shutil
 import subprocess
@@ -18,21 +17,11 @@ from resolveqa.sandbox.executor import redact_secrets
 from resolveqa.store import EventStore
 
 from .customer import QUESTION, _evidence, _read_json, _verified_facts
+from .llm import create_demo_llm
 from .runner import ROOT, MissingComponents, load_components, run_demo
-from .validate_pending import PENDING, load_pending_components
 
 DEFAULT_REPLAY = Path(__file__).resolve().parent / 'replay'
 SCENARIOS = ('coupon', 'vague')
-
-
-def _module_name(path):
-    return 'resolveqa.' + path[:-3].replace('/', '.')
-
-
-def _pending_sources():
-    return [(getattr(sys.modules.get(_module_name(path)), '__resolveqa_pending_revision__'), path)
-            for _, path in PENDING
-            if getattr(sys.modules.get(_module_name(path)), '__resolveqa_pending_revision__', None)]
 
 
 def _display_path(path):
@@ -95,7 +84,7 @@ def _show_case(scenario, run_dir, *, replay=False):
     return page, 0 if case.state == expected else 1
 
 
-def record_replay(results, destination, pending):
+def record_replay(results, destination):
     """Copy actual completed runs, preserving original bytes; refuse overwriting recordings."""
     destination = Path(destination).resolve()
     if destination.exists():
@@ -125,7 +114,7 @@ def record_replay(results, destination, pending):
         index = {'format_version': 1, 'recorded_at': recorded_at,
                  'mode': 'mock' if all(_read_json(result.run_dir / 'demo-result.json')['mode'] == 'mock'
                                        for result in results) else 'real',
-                 'pending': list(pending), 'scenarios': scenarios, 'files': inventory}
+                 'pending': [], 'scenarios': scenarios, 'files': inventory}
         (destination / 'index.json').write_text(json.dumps(index, ensure_ascii=False, indent=2), encoding='utf-8')
     except BaseException:
         shutil.rmtree(destination)
@@ -177,13 +166,11 @@ def main(argv=None):
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument('--replay', nargs='?', const=DEFAULT_REPLAY, type=Path, metavar='DIR')
     mode.add_argument('--real-llm', action='store_true', help='Opt-in explícito para Featherless')
-    parser.add_argument('--model', help='Modelo real ou FEATHERLESS_MODEL')
     parser.add_argument('--record-replay', type=Path, metavar='DIR', help='Salvar esta execução numa pasta nova')
     parser.add_argument('--open-page', action='store_true', help='Abrir a página local do cupom; todos os caminhos são impressos')
     args = parser.parse_args(argv)
     if args.replay and args.record_replay:
         parser.error('--replay e --record-replay são modos distintos')
-    saved_modules = {_module_name(path): sys.modules.get(_module_name(path)) for _, path in PENDING}
     try:
         if args.replay:
             index, runs = load_replay(args.replay)
@@ -197,29 +184,18 @@ def main(argv=None):
             print('modo real (Featherless)' if args.real_llm else 'modo mock', flush=True)
             if args.record_replay and args.record_replay.exists():
                 raise ValueError('Destino da gravação já existe; escolha uma pasta nova')
-            llm_factory = None
-            if args.real_llm:
-                from .real_llm import RealLLM
-                model = args.model or os.environ.get('FEATHERLESS_MODEL')
-                RealLLM(model)  # Validate opt-in credentials before loading stages.
-                llm_factory = lambda: RealLLM(model)
-            try:
-                load_components()
-            except MissingComponents:
-                load_pending_components(ROOT, only_missing=True)
-                load_components()
-            pending = _pending_sources()
-            print('Composição: implementações reais de PRs pendentes (Git local, sem merge)'
-                  if pending else 'Composição: APIs públicas disponíveis na branch')
+            create_demo_llm(real=args.real_llm)  # Validate the credential file before loading stages.
+            load_components()
+            print('Composição: APIs públicas disponíveis na branch')
             results, pages, statuses = [], [], []
             for scenario in SCENARIOS:
-                result = run_demo(scenario, llm=llm_factory() if llm_factory else None, real=args.real_llm)
+                result = run_demo(scenario, llm=create_demo_llm(real=args.real_llm), real=args.real_llm)
                 results.append(result)
                 page, status = _show_case(scenario, result.run_dir)
                 pages.append(page)
                 statuses.append(status)
             if args.record_replay:
-                path = record_replay(results, args.record_replay, pending)
+                path = record_replay(results, args.record_replay)
                 print('Replay gravado: ' + _display_path(path))
         if args.open_page and not webbrowser.open(pages[0].resolve().as_uri()):
             print('Navegador indisponível; use o caminho da página indicado acima', file=sys.stderr)
@@ -227,13 +203,6 @@ def main(argv=None):
     except (OSError, ValueError, MissingComponents, subprocess.CalledProcessError, ImportError, KeyError, StopIteration) as exc:
         print('Palco indisponível: ' + redact_secrets(str(exc)), file=sys.stderr)
         return 2
-    finally:
-        # Do not leave stage-only imports installed in the caller's process.
-        for name, original in saved_modules.items():
-            if original is None:
-                sys.modules.pop(name, None)
-            else:
-                sys.modules[name] = original
 
 
 if __name__ == '__main__':

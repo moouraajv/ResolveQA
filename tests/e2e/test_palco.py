@@ -18,16 +18,11 @@ def test_stage_mock_runs_both_scenarios_and_records_replay(monkeypatch, capsys, 
     monkeypatch.setattr(urllib.request.OpenerDirector, 'open', _no_network)
     monkeypatch.setattr(socket, 'create_connection', _no_network)
     destination = tmp_path / 'recording'
-    try:
-        palco.load_components()
-    except palco.MissingComponents:
-        pending_expected = True
-    else:
-        pending_expected = bool(palco._pending_sources())
     assert palco.main(['--record-replay', str(destination)]) == 0
     out = capsys.readouterr().out
     assert out.startswith('modo mock\n')
-    assert ('PRs pendentes' if pending_expected else 'APIs públicas disponíveis') in out
+    assert 'Composição: APIs públicas disponíveis na branch' in out
+    assert 'PRs pendentes' not in out
     assert 'Comprei R$ 200,00' in out
     assert 'O checkout está estranho' in out
     assert 'RED: observado R$ 200,00; esperado R$ 180,00' in out
@@ -41,6 +36,7 @@ def test_stage_mock_runs_both_scenarios_and_records_replay(monkeypatch, capsys, 
     assert len(out.splitlines()) <= 24
     manifest = json.loads((destination / 'index.json').read_text())
     assert manifest['mode'] == 'mock'
+    assert manifest['pending'] == []
     assert set(manifest['scenarios']) == {'coupon', 'vague'}
     assert any(name.endswith('events.jsonl') for name in manifest['files'])
     assert any(name.endswith('comprovante.txt') for name in manifest['files'])
@@ -48,7 +44,7 @@ def test_stage_mock_runs_both_scenarios_and_records_replay(monkeypatch, capsys, 
 
 def test_bundled_replay_is_explicit_read_only_and_never_runs_pipeline(monkeypatch, capsys):
     monkeypatch.setattr(palco, 'run_demo', _no_network)
-    monkeypatch.setattr(palco, 'load_pending_components', _no_network)
+    monkeypatch.setattr(palco, 'load_components', _no_network)
     monkeypatch.setattr(urllib.request.OpenerDirector, 'open', _no_network)
     monkeypatch.setattr(socket, 'create_connection', _no_network)
     index = json.loads((palco.DEFAULT_REPLAY / 'index.json').read_text())
@@ -115,8 +111,9 @@ def test_recording_is_not_overwritten_or_rerun(monkeypatch, capsys):
     assert 'já existe' in capsys.readouterr().err
 
 
-def test_real_stage_requires_explicit_credential_without_network(monkeypatch, capsys):
-    monkeypatch.delenv('FEATHERLESS_API_KEY', raising=False)
+def test_real_stage_requires_explicit_credential_without_network(monkeypatch, capsys, tmp_path):
+    monkeypatch.setenv('HOME', str(tmp_path))
+    monkeypatch.setenv('FEATHERLESS_API_KEY', 'synthetic-environment-value')
     monkeypatch.setattr(urllib.request.OpenerDirector, 'open', _no_network)
     assert palco.main(['--real-llm']) == 2
     result = capsys.readouterr()
