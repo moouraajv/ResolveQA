@@ -64,6 +64,8 @@ class ReplyComposer:
 
         facts = outcome if outcome is not None else ReplyOutcome()
         event_list = list(events or ())
+        if any(event.case_id != case.case_id for event in event_list):
+            raise ReplyComposeError("Reply events must belong to the requested case.")
 
         if case.state == CaseState.VERIFIED:
             verified_seq = _verified_event_seq(event_list)
