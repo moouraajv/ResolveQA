@@ -380,5 +380,89 @@ class TestTriageSharedRoleMarkers(unittest.TestCase):
         self.assertEqual(set(result.missing_fields), {"expected", "observed"})
 
 
+
+COUPON_REPORT = (
+    "Comprei R$ 200,00 no site, apliquei o cupom DESC10 de 10% e o total continuou R$ 200,00. "
+    "Deveria ser R$ 180,00."
+)
+
+
+class TestTriageRealModelOutputs(unittest.TestCase):
+    """Regressions recorded from Qwen/Qwen3-Coder-30B-A3B-Instruct on the demo reports."""
+
+    def _repo(self, tmp: str) -> Path:
+        repo = Path(tmp) / "demo-target"
+        (repo / "tests").mkdir(parents=True)
+        (repo / "checkout.py").write_text("def total(x):\n    return x\n")
+        (repo / "tests/test_checkout.py").write_text("")
+        return Path(tmp)
+
+    def test_recorded_coupon_output_is_grounded_triage(self) -> None:
+        recorded = json.dumps({"status": "triaged", "input": "R$ 200,00", "expected": "R$ 180,00",
+                               "observed": "R$ 200,00", "suspect_files": ["checkout.py"],
+                               "confidence": 0.95})
+        with tempfile.TemporaryDirectory() as tmp:
+            result = Triage(llm=LLMAdapter(response_override=recorded),
+                            base_root=self._repo(tmp)).run(_make_case(COUPON_REPORT))
+        self.assertIsInstance(result, TriageRecord)
+        self.assertEqual((result.expected, result.observed), ("R$ 180,00", "R$ 200,00"))
+
+    def test_invented_value_is_still_rejected(self) -> None:
+        invented = _payload("R$ 200,00", "R$ 190,00", "R$ 200,00")
+        result = Triage(llm=LLMAdapter(response_override=invented)).run(_make_case(COUPON_REPORT))
+        self.assertIsInstance(result, NeedsInfo)
+        self.assertIn("expected", result.missing_fields)
+
+    def test_model_question_is_replaced_by_portuguese_question(self) -> None:
+        outputs = (
+            ({"status": "needs_info", "missing_fields": ["input", "expected", "observed"],
+              "question_to_support": "Could you please provide more details about the checkout issue?",
+              "reproduction": None}, ["input", "expected", "observed"]),
+            ({"status": "needs_info", "missing_fields": ["input_value", "expected_value", "observed_value"],
+              "question_to_support": "O valor original do pedido foi realmente R$ 200,00 antes do cupom?",
+              "reproduction": None}, ["input", "expected", "observed"]),
+            ({"status": "needs_info", "missing_fields": ["Observed amount"],
+              "question_to_support": "What was charged?", "reproduction": None}, ["observed"]),
+            ({"status": "needs_info", "missing_fields": ["details"],
+              "question_to_support": "More details?", "reproduction": None}, ["input", "expected", "observed"]),
+        )
+        for payload, fields in outputs:
+            with self.subTest(fields=payload["missing_fields"]):
+                result = Triage(llm=LLMAdapter(response_override=json.dumps(payload))).run(
+                    _make_case("O checkout está estranho, o valor não bate."))
+                self.assertIsInstance(result, NeedsInfo)
+                self.assertEqual(list(result.missing_fields), fields)
+                self.assertNotIn(payload["question_to_support"], result.question_to_support)
+                self.assertTrue(result.question_to_support.startswith("Para "))
+                self.assertIn("valor", result.question_to_support)
+                self.assertTrue(result.question_to_support.endswith("?"))
+
+    def test_prompt_describes_schema_and_lists_only_repository_sources(self) -> None:
+        seen: dict = {}
+
+        def capture(_purpose, messages, _schema):
+            seen["messages"] = messages
+            return _payload("R$ 200,00", "R$ 180,00", "R$ 200,00")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            Triage(llm=LLMAdapter(response_override=capture), base_root=self._repo(tmp)).run(
+                _make_case(COUPON_REPORT))
+        system, user = seen["messages"][0]["content"], seen["messages"][1]["content"]
+        self.assertIn('"status": "triaged"', system)
+        self.assertIn("Brazilian Portuguese", system)
+        self.assertNotIn(COUPON_REPORT, system)
+        self.assertIn('<untrusted_data label="repository_files">\ncheckout.py\n</untrusted_data>', user)
+        self.assertNotIn("test_checkout.py", user)
+
+    def test_unknown_suspect_file_is_rejected_when_repository_is_known(self) -> None:
+        hallucinated = json.dumps({"status": "triaged", "input": "R$ 200,00", "expected": "R$ 180,00",
+                                   "observed": "R$ 200,00", "suspect_files": ["src/cart/discount.py"],
+                                   "confidence": 0.9})
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaises(LLMOutputError):
+                Triage(llm=LLMAdapter(response_override=hallucinated),
+                       base_root=self._repo(tmp)).run(_make_case(COUPON_REPORT))
+
+
 if __name__ == "__main__":
     unittest.main()
