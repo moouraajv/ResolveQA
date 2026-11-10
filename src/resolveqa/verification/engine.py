@@ -215,7 +215,7 @@ class VerificationStage:
                 target = workspace / _relative(test_path)
                 # When Reproduction provides a filesystem artifact, bind both
                 # executions to those exact bytes even if a test already exists.
-                if repro.test_source_ref.startswith('runs/'):
+                if _relative(repro.test_source_ref).parts[0] == 'runs':
                     recorded_source = self._artifact(repro.test_source_ref, case).read_bytes()
                     if target.is_file() and target.read_bytes() != recorded_source:
                         raise _Rejected("Target reproduction differs from recorded test source")
