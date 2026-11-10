@@ -254,7 +254,12 @@ class IntakeRequestHandler(BaseHTTPRequestHandler):
         self._write(HTTPStatus.OK, page, "text/html; charset=utf-8")
 
     def _load_case_events(self, case_id: str) -> list[Event]:
-        path = Path(self.server.runs_root) / case_id / "events.jsonl"
+        from resolveqa.timeline.reader import events_path
+
+        try:
+            path = events_path(self.server.runs_root, case_id)
+        except TimelineError as err:
+            raise ReplyComposeError(str(err)) from err
         if not path.exists():
             return []
         events: list[Event] = []
