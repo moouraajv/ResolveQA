@@ -68,7 +68,7 @@ def scan_paths_for_secrets(
                     SecretFinding(
                         path=str(resolved),
                         kind=kind,
-                        excerpt=match[:12] + "…",
+                        excerpt="[REDACTED_SECRET]",
                     )
                 )
     return findings
