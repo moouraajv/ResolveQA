@@ -62,10 +62,7 @@ def scan_paths_for_secrets(
             if resolved in seen or not resolved.is_file():
                 continue
             seen.add(resolved)
-            try:
-                text = resolved.read_text(encoding="utf-8", errors="replace")
-            except OSError:
-                continue
+            text = resolved.read_text(encoding="utf-8", errors="replace")
             for kind, match in find_secrets_in_text(text):
                 findings.append(
                     SecretFinding(
