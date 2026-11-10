@@ -1,11 +1,3 @@
-"""ResolveQA orchestrator package (Track A)."""
+"""ResolveQA orchestrator package (Track A — owned elsewhere; stub only)."""
 
-from .engine import Orchestrator, OrchestratorError
-from .limits import OrchestratorLimits, load_orchestrator_limits
-
-__all__ = [
-    "Orchestrator",
-    "OrchestratorError",
-    "OrchestratorLimits",
-    "load_orchestrator_limits",
-]
+__all__: list[str] = []
