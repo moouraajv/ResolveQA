@@ -116,13 +116,13 @@ class ReplyComposer:
 
         if case.state == CaseState.BLOCKED:
             detail = (facts.blocked_detail or "").strip()
-            if not detail and case.terminal_reason is not None:
-                detail = str(getattr(case.terminal_reason, "detail", "") or "").strip()
-                code = getattr(case.terminal_reason, "code", None)
-                if code is not None and not detail:
-                    detail = getattr(code, "value", str(code))
             if not detail:
-                detail = "o caso ficou bloqueado e segue em análise interna"
+                code = getattr(getattr(case.terminal_reason, "code", None), "value", None)
+                detail = {
+                    "limit_exceeded": "atingimos o limite de tentativas automáticas e o caso segue com a nossa equipe",
+                    "not_reproduced": "ainda não conseguimos reproduzir o problema relatado",
+                    "patch_rejected": "a correção proposta não passou nas nossas verificações",
+                }.get(code, "o caso ficou bloqueado e segue em análise interna")
             text = f"Andamento: ainda não há correção publicada — {detail}."
             seq = 0 if sent_after_event_seq is None else sent_after_event_seq
             return CustomerMessage(
