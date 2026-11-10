@@ -310,6 +310,13 @@ class IntakeRequestHandler(BaseHTTPRequestHandler):
                 self._write(status, body, ctype)
                 return
 
+        for field_name in ("corrected_behavior", "support_question", "blocked_detail"):
+            value = payload.get(field_name)
+            if value is not None and not isinstance(value, str):
+                status, body, ctype = _error(f"{field_name} must be a string or null")
+                self._write(status, body, ctype)
+                return
+
         outcome = ReplyOutcome(
             corrected_behavior=payload.get("corrected_behavior"),
             support_question=payload.get("support_question"),
