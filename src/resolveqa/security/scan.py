@@ -17,18 +17,8 @@ _SECRET_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("bearer_jwt", re.compile(r"\b(eyJ[A-Za-z0-9_-]+\.eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+)\b")),
 )
 
-# Artifact name globs that #26 / #27 will produce; scan covers them when present.
-DEFAULT_ARTIFACT_GLOBS: tuple[str, ...] = (
-    "**/events.jsonl",
-    "**/evidence/**",
-    "**/*.log",
-    "**/CHANGELOG.md",
-    "**/changelog*",
-    "**/technical_notes/**",
-    "**/kb_drafts/**",
-    "**/*nota*tecnica*",
-    "**/*kb*draft*",
-)
+# Scan every file under the supplied artifact roots, including generated notes and KB drafts.
+DEFAULT_ARTIFACT_GLOBS: tuple[str, ...] = ("**/*",)
 
 
 @dataclass(frozen=True)
