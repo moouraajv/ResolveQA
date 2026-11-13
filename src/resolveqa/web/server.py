@@ -20,7 +20,9 @@ Missing or blank client_id is refused with HTTP 400 and a clear error message.
 API/form behavior from issue #13 is preserved; chat reuses the same Intake instance.
 Timeline/reply never invent pipeline progress; they only reflect stored events / terminal state.
 CORS allow-list: RESOLVEQA_CORS_ORIGINS (comma/newline) or demo defaults (localhost:3000 + public front).
-Advance updates the ephemeral case store (+ events.jsonl) for Quadro sync; it does not run agents.
+Advance updates the case store (+ events.jsonl) for Quadro sync; it does not run agents.
+When RESOLVEQA_QUEUE is set, POST /api/cases returns 202 and enqueues the worker.
+GET /api/snapshot and GET /api/events (SSE) support the production Quadro.
 """
 
 from __future__ import annotations
@@ -29,6 +31,7 @@ import html
 import json
 import os
 import re
+import time
 import uuid
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -212,17 +215,40 @@ class IntakeRequestHandler(BaseHTTPRequestHandler):
         self._apply_cors_headers()
         self.end_headers()
 
+    def _storage_label(self) -> str:
+        return getattr(self.server, "storage_label", "ephemeral-in-memory")
+
+    def _queue_enabled(self) -> bool:
+        return getattr(self.server, "queue_enabled", False)
+
+    def _allow_operator_advance(self) -> bool:
+        return getattr(self.server, "allow_operator_advance", True)
+
     def do_GET(self) -> None:  # noqa: N802
         path = self.path.split("?", 1)[0]
         if path == "/health":
             status, body, ctype = _json_bytes(
                 {
                     "ok": True,
-                    "storage": "ephemeral-in-memory",
-                    "note": "local demo only; no durable persistence",
+                    "storage": self._storage_label(),
+                    "queue": self._queue_enabled(),
+                    "operator_advance": self._allow_operator_advance(),
+                    "note": (
+                        "cloud spine: create enqueues worker"
+                        if self._queue_enabled()
+                        else "local demo; operator advance does not run agents"
+                    ),
                 }
             )
             self._write(status, body, ctype)
+            return
+
+        if path == "/api/snapshot":
+            self._handle_snapshot()
+            return
+
+        if path == "/api/events":
+            self._handle_events_sse()
             return
 
         if path in {"/", "/form"}:
@@ -256,7 +282,7 @@ class IntakeRequestHandler(BaseHTTPRequestHandler):
             status, body, ctype = _json_bytes(
                 {
                     "case": case.to_dict(),
-                    "storage": "ephemeral-in-memory",
+                    "storage": self._storage_label(),
                 }
             )
             self._write(status, body, ctype)
@@ -264,6 +290,70 @@ class IntakeRequestHandler(BaseHTTPRequestHandler):
 
         status, body, ctype = _error("not found", HTTPStatus.NOT_FOUND)
         self._write(status, body, ctype)
+
+    def _handle_snapshot(self) -> None:
+        cases = self.intake.list_cases()
+        events: list[dict[str, Any]] = []
+        for case in cases:
+            for event in self._load_case_events(case.case_id):
+                events.append(event.to_dict())
+        events.sort(key=lambda e: (e.get("case_id", ""), int(e.get("seq", 0))))
+        status, body, ctype = _json_bytes(
+            {
+                "cases": [c.to_dict() for c in cases],
+                "events": events,
+                "spans": [],
+                "documents": [],
+            }
+        )
+        self._write(status, body, ctype)
+
+    def _handle_events_sse(self) -> None:
+        """SSE stream of Event payloads; polls EventStore for new lines."""
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("Connection", "keep-alive")
+        self._apply_cors_headers()
+        self.end_headers()
+        seen: set[str] = set()
+        # Seed with current history so reconnecting clients catch up once.
+        for case in self.intake.list_cases():
+            for event in self._load_case_events(case.case_id):
+                seen.add(event.event_id)
+                payload = json.dumps(event.to_dict(), ensure_ascii=False)
+                chunk = f"event: {event.type.value}\ndata: {payload}\n\n".encode("utf-8")
+                try:
+                    self.wfile.write(chunk)
+                    self.wfile.flush()
+                except BrokenPipeError:
+                    return
+        idle_rounds = 0
+        while idle_rounds < 120:  # ~10 minutes at 5s
+            emitted = False
+            for case in self.intake.list_cases():
+                for event in self._load_case_events(case.case_id):
+                    if event.event_id in seen:
+                        continue
+                    seen.add(event.event_id)
+                    emitted = True
+                    payload = json.dumps(event.to_dict(), ensure_ascii=False)
+                    chunk = f"event: {event.type.value}\ndata: {payload}\n\n".encode("utf-8")
+                    try:
+                        self.wfile.write(chunk)
+                        self.wfile.flush()
+                    except BrokenPipeError:
+                        return
+            if not emitted:
+                idle_rounds += 1
+                try:
+                    self.wfile.write(b": keepalive\n\n")
+                    self.wfile.flush()
+                except BrokenPipeError:
+                    return
+            else:
+                idle_rounds = 0
+            time.sleep(5)
 
     def do_POST(self) -> None:  # noqa: N802
         path = self.path.split("?", 1)[0]
@@ -382,6 +472,7 @@ class IntakeRequestHandler(BaseHTTPRequestHandler):
             updated, previous = self.intake.advance(
                 case_id,
                 to_state=to_state.strip() if isinstance(to_state, str) and to_state.strip() else None,
+                allow_operator_advance=self._allow_operator_advance(),
             )
         except ContractValidationError as err:
             message = str(err)
@@ -422,7 +513,7 @@ class IntakeRequestHandler(BaseHTTPRequestHandler):
             {
                 "case": updated.to_dict(),
                 "event": event.to_dict() if event is not None else None,
-                "storage": "ephemeral-in-memory",
+                "storage": self._storage_label(),
                 "note": "Estado atualizado no store do backend; não executa agentes.",
             }
         )
@@ -593,13 +684,19 @@ class IntakeRequestHandler(BaseHTTPRequestHandler):
             self._write(status, body, ctype)
             return
 
+        queued = self._queue_enabled()
         status, body, ctype = _json_bytes(
             {
                 "case": case.to_dict(),
-                "storage": "ephemeral-in-memory",
-                "note": "local demo only; no durable persistence",
+                "storage": self._storage_label(),
+                "queued": queued,
+                "note": (
+                    "accepted; worker will run the agent pipeline"
+                    if queued
+                    else "created; no worker queue configured"
+                ),
             },
-            status=HTTPStatus.CREATED,
+            status=HTTPStatus.ACCEPTED if queued else HTTPStatus.CREATED,
         )
         self._write(status, body, ctype)
 
@@ -676,14 +773,20 @@ class IntakeRequestHandler(BaseHTTPRequestHandler):
             self._write(status, body, ctype)
             return
 
+        queued = self._queue_enabled()
         status, body, ctype = _json_bytes(
             {
                 "case": case.to_dict(),
                 "channel_label": "Canal simulado",
-                "storage": "ephemeral-in-memory",
-                "note": "local demo only; no durable persistence; no invented progress",
+                "storage": self._storage_label(),
+                "queued": queued,
+                "note": (
+                    "accepted; worker will run the agent pipeline"
+                    if queued
+                    else "local demo; no invented progress"
+                ),
             },
-            status=HTTPStatus.CREATED,
+            status=HTTPStatus.ACCEPTED if queued else HTTPStatus.CREATED,
         )
         self._write(status, body, ctype)
 
@@ -753,6 +856,9 @@ class IntakeHTTPServer(ThreadingHTTPServer):
         playbook: Playbook | None = None,
         playbook_path: Path | str | None = None,
         cors_origins: frozenset[str] | set[str] | list[str] | None = None,
+        storage_label: str | None = None,
+        queue_enabled: bool | None = None,
+        allow_operator_advance: bool | None = None,
     ) -> None:
         self.intake = intake if intake is not None else Intake()
         self.runs_root = Path(runs_root) if runs_root is not None else _DEFAULT_RUNS_ROOT
@@ -770,6 +876,25 @@ class IntakeHTTPServer(ThreadingHTTPServer):
             self.cors_origins = _parse_cors_origins(os.environ.get("RESOLVEQA_CORS_ORIGINS"))
         else:
             self.cors_origins = frozenset(cors_origins)
+        from resolveqa.runtime_boot import storage_label as _label
+
+        self.storage_label = storage_label or _label(self.intake.store)
+        self.queue_enabled = (
+            bool(getattr(self.intake, "queue", None) is not None)
+            if queue_enabled is None
+            else queue_enabled
+        )
+        if allow_operator_advance is None:
+            # Cloud/production: disable fake progress when a worker queue is attached.
+            env = (os.environ.get("RESOLVEQA_ALLOW_OPERATOR_ADVANCE") or "").strip().lower()
+            if env in {"1", "true", "yes"}:
+                self.allow_operator_advance = True
+            elif env in {"0", "false", "no"}:
+                self.allow_operator_advance = False
+            else:
+                self.allow_operator_advance = not self.queue_enabled
+        else:
+            self.allow_operator_advance = allow_operator_advance
         super().__init__(server_address, IntakeRequestHandler)
 
 
