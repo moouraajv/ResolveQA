@@ -40,10 +40,10 @@ Documentação técnica de apoio (não substitui os quatro itens acima): [`docs/
 
 | Superfície | URL |
 |---|---|
-| Backend | https://d2a053hki46q2m.cloudfront.net |
-| Health | https://d2a053hki46q2m.cloudfront.net/health |
-| Intake (form) | https://d2a053hki46q2m.cloudfront.net/form |
-| Chat simulado | https://d2a053hki46q2m.cloudfront.net/chat |
+| Backend | https://dec5ise4h3d48.cloudfront.net |
+| Health | https://dec5ise4h3d48.cloudfront.net/health |
+| Intake (form) | https://dec5ise4h3d48.cloudfront.net/form |
+| Chat simulado | https://dec5ise4h3d48.cloudfront.net/chat |
 | Front Mola (Quadro) | https://dsh3ja1i4695p.cloudfront.net/quadro |
 | Admin | https://dsh3ja1i4695p.cloudfront.net/admin |
 
@@ -52,7 +52,7 @@ Em produção/staging o avanço do quadro reflete o **worker real** (`create →
 
 ### Como ver o agente em ~2 minutos
 
-1. Abra o [form](https://d2a053hki46q2m.cloudfront.net/form) ou o [Quadro](https://dsh3ja1i4695p.cloudfront.net/quadro).
+1. Abra o [form](https://dec5ise4h3d48.cloudfront.net/form) ou o [Quadro](https://dsh3ja1i4695p.cloudfront.net/quadro).
 2. Envie um relato com `client_id` + `repo_ref` (ex. dogfood: `resolveqa` / `targets/resolveqa-checkout`) e um texto como: *“Comprei R$ 200, apliquei cupom DESC10 de 10% e o total continuou R$ 200.”*
 3. Acompanhe os estados no Quadro até `verified` ou um terminal honesto (`needs_info`, etc.).
 

@@ -165,7 +165,7 @@ Resources:
             }
 
             exec > >(tee /var/log/resolveqa-userdata.log|logger -t resolveqa-userdata -s 2>/dev/console) 2>&1
-            echo "[ResolveQA] Bootstrapping ResolveQA Ephemeral Backend..."
+            echo "[ResolveQA] Bootstrapping ResolveQA ${EnvironmentName} backend (artifact ${ArtifactSha256})..."
 
             dnf update -y
             dnf install -y python3.11 aws-cfn-bootstrap tar gzip
