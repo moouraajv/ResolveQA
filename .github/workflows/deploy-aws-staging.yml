@@ -29,7 +29,6 @@ jobs:
   deploy:
     needs: test
     runs-on: ubuntu-latest
-    environment: staging
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -43,12 +42,13 @@ jobs:
       - name: Deploy staging backend stack
         env:
           AWS_REGION: ${{ secrets.AWS_REGION }}
-          AWS_STACK_NAME: ${{ secrets.AWS_STACK_NAME_STAGING }}
+          AWS_STACK_NAME: ${{ secrets.AWS_STACK_NAME_STAGING || secrets.AWS_STACK_NAME || 'resolveqa-staging-backend' }}
           AWS_ARTIFACT_BUCKET: ${{ secrets.AWS_ARTIFACT_BUCKET }}
           AWS_VPC_ID: ${{ vars.AWS_VPC_ID }}
           AWS_SUBNET_ID: ${{ vars.AWS_SUBNET_ID }}
-          AWS_INSTANCE_TYPE: ${{ vars.AWS_INSTANCE_TYPE }}
+          AWS_INSTANCE_TYPE: ${{ vars.AWS_INSTANCE_TYPE || 't4g.micro' }}
           AWS_ENVIRONMENT_NAME: staging
+          ALLOW_STACK_CREATE: "1"
           RESOLVEQA_AGENT_MODE: general
           RESOLVEQA_CASE_STORE: file
           RESOLVEQA_QUEUE: file
@@ -56,7 +56,7 @@ jobs:
       - name: Publish staging URL
         env:
           AWS_REGION: ${{ secrets.AWS_REGION }}
-          AWS_STACK_NAME: ${{ secrets.AWS_STACK_NAME_STAGING }}
+          AWS_STACK_NAME: ${{ secrets.AWS_STACK_NAME_STAGING || secrets.AWS_STACK_NAME || 'resolveqa-staging-backend' }}
         run: |
           set -euo pipefail
           base=$(aws cloudformation describe-stacks --stack-name "$AWS_STACK_NAME" \

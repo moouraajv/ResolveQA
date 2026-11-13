@@ -13,8 +13,9 @@
 
 Use um stack **separado** do demo/prod (ex.: `resolveqa-staging-backend`).
 
-## Bootstrap (uma vez)
-O deploy só **atualiza** stack existente (mesmo guardrail do prod). Crie o stack staging uma vez com o mesmo fluxo de `docs/deploy-backend.md`, com `EnvironmentName=staging` e `AWS_STACK_NAME=resolveqa-staging-backend`. Depois grave `AWS_STACK_NAME_STAGING` nos secrets.
+## Bootstrap
+Staging pode **criar** o stack automaticamente (`ALLOW_STACK_CREATE=1`, `EnvironmentName=staging`).
+Default do nome: `resolveqa-staging-backend` (override com secret `AWS_STACK_NAME_STAGING`).
 
 Runtime no staging (UserData):
 - API + worker no mesmo host
