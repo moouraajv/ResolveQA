@@ -123,7 +123,7 @@ Estados: `created` → `triaging` → `triaged` → `reproducing` → `reproduce
 
 ## Demo
 
-- Backend: https://dec5ise4h3d48.cloudfront.net  
+- Backend: https://d3nqg1nmn3omeh.cloudfront.net  
 - Quadro: https://dsh3ja1i4695p.cloudfront.net/quadro  
 - Guia passo a passo: [`demo-ao-vivo.md`](demo-ao-vivo.md)
 

@@ -6,9 +6,9 @@ Entregável §8: **protótipo funcional do agente de IA** (demo ao vivo ou grava
 
 | Superfície | URL |
 |---|---|
-| Intake | https://dec5ise4h3d48.cloudfront.net/form |
-| Chat simulado | https://dec5ise4h3d48.cloudfront.net/chat |
-| Health | https://dec5ise4h3d48.cloudfront.net/health |
+| Intake | https://d3nqg1nmn3omeh.cloudfront.net/form |
+| Chat simulado | https://d3nqg1nmn3omeh.cloudfront.net/chat |
+| Health | https://d3nqg1nmn3omeh.cloudfront.net/health |
 | Quadro Mola | https://dsh3ja1i4695p.cloudfront.net/quadro |
 | Admin | https://dsh3ja1i4695p.cloudfront.net/admin |
 
@@ -36,7 +36,7 @@ Confirme antes da banca: `GET /health` → `"environment":"staging"`, `"queue":t
 
 ### C — Chat simulado (opcional)
 
-1. https://dec5ise4h3d48.cloudfront.net/chat  
+1. https://d3nqg1nmn3omeh.cloudfront.net/chat  
 2. Mostrar o rótulo permanente **Canal simulado**.  
 3. Enviar o mesmo relato do cupom.
 
@@ -55,6 +55,6 @@ wf-recorder -g "$(slurp)" -f docs/akcit/assets/demo-resolveqa.mp4
 ## Smoke rápido (CI / pré-banca)
 
 ```bash
-python3 scripts/smoke_test.py --base-url https://dec5ise4h3d48.cloudfront.net
-curl -sS https://dec5ise4h3d48.cloudfront.net/health
+python3 scripts/smoke_test.py --base-url https://d3nqg1nmn3omeh.cloudfront.net
+curl -sS https://d3nqg1nmn3omeh.cloudfront.net/health
 ```
