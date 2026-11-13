@@ -1,0 +1,175 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "CloudFormationStacks",
+      "Effect": "Allow",
+      "Action": [
+        "cloudformation:CreateChangeSet",
+        "cloudformation:CreateStack",
+        "cloudformation:DeleteChangeSet",
+        "cloudformation:DescribeChangeSet",
+        "cloudformation:DescribeStackEvents",
+        "cloudformation:DescribeStackResource",
+        "cloudformation:DescribeStackResources",
+        "cloudformation:DescribeStacks",
+        "cloudformation:ExecuteChangeSet",
+        "cloudformation:GetTemplate",
+        "cloudformation:GetTemplateSummary",
+        "cloudformation:ListStackResources",
+        "cloudformation:ListStacks",
+        "cloudformation:UpdateStack",
+        "cloudformation:ValidateTemplate"
+      ],
+      "Resource": [
+        "arn:aws:cloudformation:us-east-1:*:stack/resolveqa-backend/*",
+        "arn:aws:cloudformation:us-east-1:*:stack/resolveqa-demo-backend/*",
+        "arn:aws:cloudformation:us-east-1:*:stack/resolveqa-frontend/*",
+        "arn:aws:cloudformation:us-east-1:*:stack/resolveqa-staging-backend/*",
+        "arn:aws:cloudformation:us-east-1:*:stack/resolveqa-staging-frontend/*"
+      ]
+    },
+    {
+      "Sid": "PassRoleForCFN",
+      "Effect": "Allow",
+      "Action": "iam:PassRole",
+      "Resource": "arn:aws:iam::*:role/resolveqa-*"
+    },
+    {
+      "Sid": "S3DeployArtifactsAndFrontend",
+      "Effect": "Allow",
+      "Action": [
+        "s3:CreateBucket",
+        "s3:DeleteBucketPolicy",
+        "s3:DeleteObject",
+        "s3:GetBucketLocation",
+        "s3:GetBucketOwnershipControls",
+        "s3:GetBucketPolicy",
+        "s3:GetBucketPublicAccessBlock",
+        "s3:GetBucketVersioning",
+        "s3:GetEncryptionConfiguration",
+        "s3:GetObject",
+        "s3:ListBucket",
+        "s3:PutBucketEncryption",
+        "s3:PutBucketOwnershipControls",
+        "s3:PutBucketPolicy",
+        "s3:PutBucketPublicAccessBlock",
+        "s3:PutBucketTagging",
+        "s3:PutBucketVersioning",
+        "s3:PutEncryptionConfiguration",
+        "s3:PutObject"
+      ],
+      "Resource": [
+        "arn:aws:s3:::resolveqa-*-sitebucket-*",
+        "arn:aws:s3:::resolveqa-*-sitebucket-*/*",
+        "arn:aws:s3:::resolveqa-deployment-artifacts",
+        "arn:aws:s3:::resolveqa-deployment-artifacts/*",
+        "arn:aws:s3:::resolveqa-frontend-*",
+        "arn:aws:s3:::resolveqa-frontend-*/*",
+        "arn:aws:s3:::resolveqa-staging-*",
+        "arn:aws:s3:::resolveqa-staging-*/*",
+        "arn:aws:s3:::resolveqa-staging-frontend-*",
+        "arn:aws:s3:::resolveqa-staging-frontend-*/*"
+      ]
+    },
+    {
+      "Sid": "CloudFront",
+      "Effect": "Allow",
+      "Action": [
+        "cloudfront:CreateCachePolicy",
+        "cloudfront:CreateCloudFrontOriginAccessIdentity",
+        "cloudfront:CreateDistribution",
+        "cloudfront:CreateFunction",
+        "cloudfront:CreateInvalidation",
+        "cloudfront:CreateOriginAccessControl",
+        "cloudfront:CreateResponseHeadersPolicy",
+        "cloudfront:DeleteCachePolicy",
+        "cloudfront:DeleteCloudFrontOriginAccessIdentity",
+        "cloudfront:DeleteDistribution",
+        "cloudfront:DeleteFunction",
+        "cloudfront:DeleteOriginAccessControl",
+        "cloudfront:DeleteResponseHeadersPolicy",
+        "cloudfront:DescribeFunction",
+        "cloudfront:GetCachePolicy",
+        "cloudfront:GetCloudFrontOriginAccessIdentity",
+        "cloudfront:GetDistribution",
+        "cloudfront:GetDistributionConfig",
+        "cloudfront:GetFunction",
+        "cloudfront:GetInvalidation",
+        "cloudfront:GetOriginAccessControl",
+        "cloudfront:GetResponseHeadersPolicy",
+        "cloudfront:ListDistributions",
+        "cloudfront:ListTagsForResource",
+        "cloudfront:PublishFunction",
+        "cloudfront:TagResource",
+        "cloudfront:UpdateCachePolicy",
+        "cloudfront:UpdateDistribution",
+        "cloudfront:UpdateFunction",
+        "cloudfront:UpdateOriginAccessControl",
+        "cloudfront:UpdateResponseHeadersPolicy"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "EC2AndSSMForBackendStack",
+      "Effect": "Allow",
+      "Action": [
+        "ec2:Describe*",
+        "ec2:CreateSecurityGroup",
+        "ec2:AuthorizeSecurityGroupIngress",
+        "ec2:AuthorizeSecurityGroupEgress",
+        "ec2:RevokeSecurityGroupIngress",
+        "ec2:RevokeSecurityGroupEgress",
+        "ec2:CreateTags",
+        "ec2:RunInstances",
+        "ec2:TerminateInstances",
+        "ec2:CreateNetworkInterface",
+        "ec2:DeleteNetworkInterface",
+        "ec2:ModifyNetworkInterfaceAttribute",
+        "ssm:GetParameter",
+        "ssm:GetParameters",
+        "autoscaling:Describe*"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "IAMRolesForBackendBootstrap",
+      "Effect": "Allow",
+      "Action": [
+        "iam:CreateRole",
+        "iam:GetRole",
+        "iam:PassRole",
+        "iam:AttachRolePolicy",
+        "iam:PutRolePolicy",
+        "iam:GetRolePolicy",
+        "iam:DeleteRolePolicy",
+        "iam:DetachRolePolicy",
+        "iam:TagRole",
+        "iam:CreateInstanceProfile",
+        "iam:GetInstanceProfile",
+        "iam:AddRoleToInstanceProfile",
+        "iam:RemoveRoleFromInstanceProfile",
+        "iam:DeleteInstanceProfile",
+        "iam:DeleteRole"
+      ],
+      "Resource": [
+        "arn:aws:iam::*:role/resolveqa-*",
+        "arn:aws:iam::*:instance-profile/resolveqa-*"
+      ]
+    },
+    {
+      "Sid": "STSIdentity",
+      "Effect": "Allow",
+      "Action": "sts:GetCallerIdentity",
+      "Resource": "*"
+    },
+    {
+      "Sid": "CloudFormationGetTemplateSummary",
+      "Effect": "Allow",
+      "Action": [
+        "cloudformation:GetTemplateSummary"
+      ],
+      "Resource": "*"
+    }
+  ]
+}
