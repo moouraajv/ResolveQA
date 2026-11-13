@@ -22,4 +22,14 @@ O repositório legado `ThiagoVenturaV/ResolveQA-front` fica como espelho histór
 | Quadro | https://d10ry6ff7l79jo.cloudfront.net/quadro |
 | Admin | https://d10ry6ff7l79jo.cloudfront.net/admin |
 
-Staging: stacks `resolveqa-staging-backend` / `resolveqa-staging-frontend` (ver `docs/cicd-aws-staging.md`).
+## Staging (`staging` branch)
+
+| Superfície | URL |
+|---|---|
+| Backend | https://d2a053hki46q2m.cloudfront.net |
+| Health | https://d2a053hki46q2m.cloudfront.net/health |
+| Front Mola | https://dsh3ja1i4695p.cloudfront.net |
+| Quadro | https://dsh3ja1i4695p.cloudfront.net/quadro |
+| Admin | https://dsh3ja1i4695p.cloudfront.net/admin |
+
+Stacks: `resolveqa-staging-backend` / `resolveqa-staging-frontend` (ver `docs/cicd-aws-staging.md`).
