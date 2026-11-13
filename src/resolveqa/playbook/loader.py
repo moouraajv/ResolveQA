@@ -15,6 +15,8 @@ import tomllib
 from pathlib import Path
 from typing import Any
 
+_TOML_LOC_RE = re.compile(r"\(at line (\d+), column (\d+)\)")
+
 from .schema import (
     BASELINE_LIMITS,
     DEFAULT_FORBIDDEN_PATHS,
@@ -352,8 +354,14 @@ def parse_playbook_toml(
     try:
         data = tomllib.loads(text)
     except tomllib.TOMLDecodeError as err:
+        # Python ≥3.12 exposes lineno/colno; 3.11 only embeds them in the message.
         line = getattr(err, "lineno", None)
         col = getattr(err, "colno", None)
+        if line is None or col is None:
+            match = _TOML_LOC_RE.search(str(err))
+            if match:
+                line = int(match.group(1))
+                col = int(match.group(2))
         loc_msg = f"line {line}, column {col}" if line is not None and col is not None else str(err)
         raise PlaybookSyntaxError(
             f"Malformed TOML at {loc_msg}: {err}",
