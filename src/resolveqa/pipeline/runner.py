@@ -39,7 +39,7 @@ class MissingComponents(RuntimeError):
 
 def agent_mode() -> str:
     """Return ``general`` (LLM fix + playbook gates) or ``dogfood`` (deterministic fix)."""
-    raw = (os.environ.get("RESOLVEQA_AGENT_MODE") or "dogfood").strip().lower()
+    raw = (os.environ.get("RESOLVEQA_AGENT_MODE") or "general").strip().lower()
     return "dogfood" if raw in {"dogfood", "deterministic", "coupon"} else "general"
 
 
