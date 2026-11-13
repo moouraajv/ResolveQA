@@ -1,78 +1,82 @@
 # Business Model Canvas — ResolveQA
 
-BMC atualizado para o AKCIT Camp Multicêntrico 2026 (entregável obrigatório §8).  
-Foco: solução early-stage baseada em **agentes de IA** para o ciclo relato → correção verificada.
+BMC atualizado — Edital AKCIT Camp Multicêntrico 2026, entregável obrigatório §8.  
+Formato clássico (Osterwalder) + notas de early-stage.
 
-## 1. Proposta de valor
+---
 
-Transformar um relato de bug (texto livre) em **reprodução automática, correção mínima e verificação independente**, com evidências e resposta ao cliente — sem merge automático e sem progresso inventado.
+## Canvas (9 blocos)
 
-Diferencial: o agente não “chuta” que está corrigido; o **Verifier determinístico** só promove `verified` com RED→GREEN + suíte verde, e playbooks da empresa limitam o que o agente pode alterar.
+```text
+┌─────────────────────┬──────────────────────────────┬─────────────────────┐
+│ 8. Parceiros-chave  │ 5. Atividades-chave          │ 1. Proposta de valor│
+│                     │                              │                     │
+│ • AWS / AKCIT       │ • Orquestrar agentes         │ Relato → correção   │
+│ • Software houses   │   (triage→repro→fix→verify) │ verificada com      │
+│   piloto            │ • Guardrails / playbooks     │ evidências, sem     │
+│ • Open source       │ • Observabilidade (Quadro)   │ merge automático e  │
+│                     │ • Empacotar PR + reply       │ sem progresso falso │
+│                     ├──────────────────────────────┤                     │
+│                     │ 6. Recursos-chave            │ Diferencial:        │
+│                     │                              │ verifier determi-   │
+│                     │ • Pipeline + orquestrador    │ nístico; playbooks  │
+│                     │ • LLM + sandbox de testes    │ da empresa; Quadro  │
+│                     │ • Infra AWS staging          │ com worker real     │
+│                     │ • UI Mola                    │                     │
+├─────────────────────┼──────────────────────────────┼─────────────────────┤
+│ 4. Relacionamento   │ 2. Segmentos                 │ 3. Canais           │
+│                     │                              │                     │
+│ • Demo pública      │ • Software houses multi-     │ • Form / API / chat │
+│ • Sucesso assistido │   cliente                    │   simulado          │
+│   (humano no merge) │ • Produto / engenharia       │ • Quadro Mola       │
+│ • Playbooks por     │ • Suporte / CS               │ • Admin / playbooks │
+│   repositório       │                              │ • Draft PR GitHub   │
+├─────────────────────┴──────────────────────────────┴─────────────────────┤
+│ 9. Estrutura de custos              │ 7. Fontes de receita               │
+│                                     │                                    │
+│ • Inferência LLM / caso             │ • SaaS B2B: seat / repo / caso     │
+│ • Compute worker + testes           │ • Enterprise: isolamento, auditoria│
+│ • CloudFront / EC2 / artefatos      │ • Setup + tuning de playbooks      │
+│ • Revisão humana (custo intencional)│ (hipótese early-stage)             │
+└─────────────────────────────────────┴────────────────────────────────────┘
+```
 
-## 2. Segmentos de clientes
+---
 
-- Software houses e times de produto que mantêm vários clientes/repositórios.
-- Times de suporte/CS que precisam de status auditável sem depender só da engenharia.
-- Engenharias que querem PRs pequenos, com prova de reprodução e verificação.
+## Proposta de valor (expandida)
 
-## 3. Personas / canais
+Transformar um relato de bug em **reprodução automática → correção mínima → verificação independente → evidências → resposta ao cliente**.
 
-| Persona | Canal ResolveQA |
+Se o agente de IA fosse removido, o valor principal desapareceria (§9.4 — centralidade da IA).
+
+## Segmentos e personas
+
+| Segmento | Dor | O que compra |
+|---|---|---|
+| Software house | Muitos clientes, filas de bugs, pouco contexto | Isolamento + playbooks + evidências |
+| Time de produto | Ciclo lento relato→fix | Tempo até `verified` com prova |
+| Suporte / CS | Depende de engenharia para status | Quadro com estados honestos |
+
+## Unit economics (hipótese — validar na final)
+
+| Item | Hipótese early-stage |
 |---|---|
-| Cliente final | Form, API ou chat simulado (estilo WhatsApp na demo) |
-| Suporte / CS | Quadro Mola (`/quadro`) — timeline real |
-| Dev / revisor | Draft PR + pacote de evidências |
-| Admin | `/admin` — operação e playbooks |
+| Custo variável / caso | LLM (triage+repro+fix) + minutos de sandbox |
+| Preço alvo | Faixa SaaS por repositório conectado + overage por caso |
+| Margem | Sobe com cache de playbooks, limites de tentativas e dogfood |
+| Payback | Redução de horas-engenheiro por incidente reproduzível |
 
-## 4. Relacionamento
+*Números definitivos entram no pitch de 5 min da final (§8.6 / §9.2 Potencial de Investimento).*
 
-- Demo pública (staging) para validação com banca e usuários.
-- Operação assistida: humano aprova merge; agente prepara o pacote.
-- Playbooks por repositório (política da casa do cliente).
+## Tração / validação atual
 
-## 5. Atividades-chave
+- Protótipo **staging** público (API + worker + Quadro).
+- Caso dogfood (cupom) e caso negativo (`needs_info`).
+- Monorepo open source: `moouraajv/ResolveQA`.
 
-- Orquestração multi-etapa do agente (triage → repro → fix → verify → reply).
-- Guardrails (playbook, limites de custo, estados terminais honestos).
-- Observabilidade do caso (snapshot/SSE) no front Mola.
-- Empacotamento de evidências e resposta ao cliente.
+## Referências
 
-## 6. Recursos-chave
-
-- Pipeline de agentes + orquestrador determinístico.
-- Alvo dogfood (`targets/resolveqa-checkout`) e modo general com LLM.
-- Infra AWS (API + worker + CloudFront) no monorepo `moouraajv/ResolveQA`.
-- Interface Mola (Kanban operacional).
-
-## 7. Parcerias-chave
-
-- AWS (infra / workshops do programa AKCIT).
-- Ecossistema open source (código e artefatos no GitHub).
-- Clientes piloto (software houses) para validação de playbooks reais.
-
-## 8. Estrutura de custos (early stage)
-
-- Inferência LLM por caso (triage/repro/fix).
-- Compute de sandbox/testes e worker.
-- Hospedagem staging/produção (EC2, CloudFront, artefatos).
-- Tempo de revisão humana no merge (intencional — não automatizado).
-
-## 9. Fontes de receita (hipótese de modelo)
-
-- SaaS B2B por seat / por caso resolvido / por repositório conectado.
-- Camada enterprise: playbooks, isolamento multi-cliente, auditoria.
-- Serviços de implantação e tuning de playbooks em contas piloto.
-
-*Unit economics e pricing ainda em validação (etapa early stage do programa).*
-
-## 10. Métricas de tração (demo / MVP)
-
-- Relato → `verified` com evidências, sem falso positivo.
-- Caso vago → `needs_info` (sem patch inventado).
-- Operador vê só progresso real no Quadro (advance demo-only).
-
-## Referências no repositório
-
-- Pitch: [`pitch/`](../../pitch/)
 - Fluxo do agente: [`fluxo-agente.md`](fluxo-agente.md)
+- Pitch: [`../../pitch/`](../../pitch/)
+- Roteiro 3 min: [`pitch-roteiro-3min.md`](pitch-roteiro-3min.md)
 - PRD: [`../PRD.md`](../PRD.md)
