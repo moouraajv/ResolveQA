@@ -41,33 +41,48 @@ PARAMS=(
 )
 
 if [[ "$STATUS" == "DOES_NOT_EXIST" ]]; then
-  echo "Stack missing; refusing create without OriginSecretHeader (use authorized bootstrap)." >&2
-  exit 2
+  if [[ "${ALLOW_STACK_CREATE:-}" != "1" && "${ENV_NAME}" != "staging" ]]; then
+    echo "Stack missing; refusing create without OriginSecretHeader (use authorized bootstrap)." >&2
+    exit 2
+  fi
+  ORIGIN_SECRET="${ORIGIN_SECRET_HEADER:-$(python3 -c 'import secrets; print(secrets.token_hex(32))')}"
+  echo "Creating stack ${STACK} (env=${ENV_NAME}) with generated OriginSecretHeader."
+  CREATE_PARAMS=(
+    "${PARAMS[@]}"
+    "ParameterKey=OriginSecretHeader,ParameterValue=${ORIGIN_SECRET}"
+  )
+  aws --region "$REGION" cloudformation create-stack \
+    --stack-name "$STACK" \
+    --template-body "file://infra/aws/template.yaml" \
+    --parameters "${CREATE_PARAMS[@]}" \
+    --capabilities CAPABILITY_IAM \
+    >/dev/null
+  aws --region "$REGION" cloudformation wait stack-create-complete --stack-name "$STACK"
+else
+  # Keep existing origin verify secret (NoEcho) on updates.
+  PARAMS+=(
+    "ParameterKey=OriginSecretHeader,UsePreviousValue=true"
+    "ParameterKey=CloudFrontPrefixListId,UsePreviousValue=true"
+    "ParameterKey=AmiId,UsePreviousValue=true"
+  )
+
+  aws --region "$REGION" cloudformation update-stack \
+    --stack-name "$STACK" \
+    --template-body "file://infra/aws/template.yaml" \
+    --parameters "${PARAMS[@]}" \
+    --capabilities CAPABILITY_IAM \
+    >/dev/null || {
+      # No-op updates return ValidationError; treat as success if stack is healthy.
+      if aws --region "$REGION" cloudformation describe-stacks --stack-name "$STACK" \
+        --query 'Stacks[0].StackStatus' --output text | grep -Eq 'COMPLETE$'; then
+        echo "No stack update required (or already current)."
+      else
+        exit 1
+      fi
+    }
+
+  aws --region "$REGION" cloudformation wait stack-update-complete --stack-name "$STACK" 2>/dev/null || true
 fi
-
-# Keep existing origin verify secret (NoEcho) on updates.
-PARAMS+=(
-  "ParameterKey=OriginSecretHeader,UsePreviousValue=true"
-  "ParameterKey=CloudFrontPrefixListId,UsePreviousValue=true"
-  "ParameterKey=AmiId,UsePreviousValue=true"
-)
-
-aws --region "$REGION" cloudformation update-stack \
-  --stack-name "$STACK" \
-  --template-body "file://infra/aws/template.yaml" \
-  --parameters "${PARAMS[@]}" \
-  --capabilities CAPABILITY_IAM \
-  >/dev/null || {
-    # No-op updates return ValidationError; treat as success if stack is healthy.
-    if aws --region "$REGION" cloudformation describe-stacks --stack-name "$STACK" \
-      --query 'Stacks[0].StackStatus' --output text | grep -Eq 'COMPLETE$'; then
-      echo "No stack update required (or already current)."
-    else
-      exit 1
-    fi
-  }
-
-aws --region "$REGION" cloudformation wait stack-update-complete --stack-name "$STACK" 2>/dev/null || true
 BASE=$(aws --region "$REGION" cloudformation describe-stacks --stack-name "$STACK" \
   --query "Stacks[0].Outputs[?OutputKey=='CloudFrontBaseUrl'].OutputValue | [0]" --output text)
 echo "CloudFrontBaseUrl=${BASE}"

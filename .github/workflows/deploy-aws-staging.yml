@@ -1,0 +1,65 @@
+name: Deploy AWS staging (backend)
+
+on:
+  push:
+    branches: [staging]
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+concurrency:
+  group: deploy-aws-backend-staging
+  cancel-in-progress: false
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install test deps
+        run: pip install pytest
+      - name: Unit/core/edge tests
+        run: PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python -m pytest -q
+
+  deploy:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ secrets.AWS_REGION }}
+      - name: Deploy staging backend stack
+        env:
+          AWS_REGION: ${{ secrets.AWS_REGION }}
+          AWS_STACK_NAME: ${{ secrets.AWS_STACK_NAME_STAGING || secrets.AWS_STACK_NAME || 'resolveqa-staging-backend' }}
+          AWS_ARTIFACT_BUCKET: ${{ secrets.AWS_ARTIFACT_BUCKET }}
+          AWS_VPC_ID: ${{ vars.AWS_VPC_ID }}
+          AWS_SUBNET_ID: ${{ vars.AWS_SUBNET_ID }}
+          AWS_INSTANCE_TYPE: ${{ vars.AWS_INSTANCE_TYPE || 't4g.micro' }}
+          AWS_ENVIRONMENT_NAME: staging
+          ALLOW_STACK_CREATE: "1"
+          RESOLVEQA_AGENT_MODE: general
+          RESOLVEQA_CASE_STORE: file
+          RESOLVEQA_QUEUE: file
+        run: bash scripts/deploy_aws.sh
+      - name: Publish staging URL
+        env:
+          AWS_REGION: ${{ secrets.AWS_REGION }}
+          AWS_STACK_NAME: ${{ secrets.AWS_STACK_NAME_STAGING || secrets.AWS_STACK_NAME || 'resolveqa-staging-backend' }}
+        run: |
+          set -euo pipefail
+          base=$(aws cloudformation describe-stacks --stack-name "$AWS_STACK_NAME" \
+            --query "Stacks[0].Outputs[?OutputKey=='CloudFrontBaseUrl'].OutputValue | [0]" --output text)
+          echo "STAGING_BACKEND_URL=$base" >> "$GITHUB_STEP_SUMMARY"
+          echo "CloudFrontBaseUrl=$base"
