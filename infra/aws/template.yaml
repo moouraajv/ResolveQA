@@ -193,17 +193,24 @@ Resources:
             RESOLVEQA_HOST=0.0.0.0
             RESOLVEQA_PORT=8080
             RESOLVEQA_ORIGIN_SECRET=${OriginSecretHeader}
+            RESOLVEQA_ROOT=/opt/resolveqa
+            RESOLVEQA_CASE_STORE=file
+            RESOLVEQA_QUEUE=file
+            RESOLVEQA_ALLOW_OPERATOR_ADVANCE=0
+            RESOLVEQA_AGENT_MODE=general
             PYTHONDONTWRITEBYTECODE=1
             PYTHONUNBUFFERED=1
             PYTHONPATH=/opt/resolveqa/src
             EOF
             chmod 600 /etc/resolveqa/backend.env
             chown root:root /etc/resolveqa/backend.env
+            mkdir -p /opt/resolveqa/runs
+            chown -R resolveqa:resolveqa /opt/resolveqa/runs
 
             # Create systemd unit referencing EnvironmentFile without token in ExecStart args
             cat << 'EOF' > /etc/systemd/system/resolveqa-backend.service
             [Unit]
-            Description=ResolveQA Ephemeral Demo Backend Service
+            Description=ResolveQA Backend API (intake + snapshot/SSE)
             Documentation=https://github.com/moouraajv/ResolveQA
             After=network.target
 
@@ -222,9 +229,30 @@ Resources:
             WantedBy=multi-user.target
             EOF
 
+            cat << 'EOF' > /etc/systemd/system/resolveqa-worker.service
+            [Unit]
+            Description=ResolveQA cloud agent worker
+            Documentation=https://github.com/moouraajv/ResolveQA
+            After=network.target resolveqa-backend.service
+
+            [Service]
+            Type=simple
+            User=resolveqa
+            Group=resolveqa
+            WorkingDirectory=/opt/resolveqa
+            EnvironmentFile=/etc/resolveqa/backend.env
+            ExecStart=/usr/bin/python3.11 -m resolveqa.worker --store file --queue file --root /opt/resolveqa
+            Restart=on-failure
+            RestartSec=5
+
+            [Install]
+            WantedBy=multi-user.target
+            EOF
+
             systemctl daemon-reload
-            systemctl enable resolveqa-backend
+            systemctl enable resolveqa-backend resolveqa-worker
             systemctl start resolveqa-backend
+            systemctl start resolveqa-worker
 
             # Poll localhost healthcheck to confirm readiness before signaling CloudFormation
             echo "[ResolveQA] Checking service readiness on localhost..."
