@@ -1,0 +1,12 @@
+{
+  "checks": [
+    "SSE conecta e hidrata snapshot",
+    "Evento SSE transporta o card e reconexão duplicada não repete a transição",
+    "CaseCreated descobre e consulta caso criado por agente remoto",
+    "EvidenceAdded atualiza as evidências do caso",
+    "Falha de backend mostra erro e identifica o último snapshot sem inventar dados",
+    "Produção vem do env e ignora preferência de exemplos salva no navegador"
+  ],
+  "errors": [],
+  "backend": "local controlled HTTP/SSE service; not a remote production activation"
+}

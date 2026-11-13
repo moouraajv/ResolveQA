@@ -13,3 +13,13 @@ __pycache__/
 *.egg-info/
 build/
 dist/
+
+# Frontend (monorepo `front/`)
+front/node_modules/
+front/out/
+front/dist/
+front/.next/
+front/tsconfig.tsbuildinfo
+front/.env
+front/.env.local
+front/.env.*.local

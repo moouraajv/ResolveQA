@@ -1,0 +1,28 @@
+{
+  "ok": true,
+  "chroma_key": {
+    "hex": "#FF00FF",
+    "rgb": [
+      255,
+      0,
+      255
+    ],
+    "threshold": 127.0
+  },
+  "rows": [
+    {
+      "state": "failed",
+      "frames": [
+        "artwork/mola-rainbow-v2/qa/rows/failed/frames-threshold127/failed/00.png",
+        "artwork/mola-rainbow-v2/qa/rows/failed/frames-threshold127/failed/01.png",
+        "artwork/mola-rainbow-v2/qa/rows/failed/frames-threshold127/failed/02.png",
+        "artwork/mola-rainbow-v2/qa/rows/failed/frames-threshold127/failed/03.png",
+        "artwork/mola-rainbow-v2/qa/rows/failed/frames-threshold127/failed/04.png",
+        "artwork/mola-rainbow-v2/qa/rows/failed/frames-threshold127/failed/05.png",
+        "artwork/mola-rainbow-v2/qa/rows/failed/frames-threshold127/failed/06.png",
+        "artwork/mola-rainbow-v2/qa/rows/failed/frames-threshold127/failed/07.png"
+      ],
+      "method": "components"
+    }
+  ]
+}

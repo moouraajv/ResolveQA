@@ -1,0 +1,112 @@
+{
+  "ok": true,
+  "frames_root": "artwork/mola-rainbow-v2/qa/rows/review/frames",
+  "states": [
+    "review"
+  ],
+  "errors": [],
+  "warnings": [],
+  "rows": [
+    {
+      "state": "review",
+      "expected_frames": 6,
+      "actual_frames": 6,
+      "extraction_method": "components",
+      "ok": true,
+      "errors": [],
+      "warnings": [],
+      "frames": [
+        {
+          "index": 0,
+          "file": "artwork/mola-rainbow-v2/qa/rows/review/frames/review/00.png",
+          "width": 192,
+          "height": 208,
+          "nontransparent_pixels": 16415,
+          "bbox": [
+            5,
+            34,
+            187,
+            173
+          ],
+          "edge_pixels": 0,
+          "chroma_adjacent_pixels": 567
+        },
+        {
+          "index": 1,
+          "file": "artwork/mola-rainbow-v2/qa/rows/review/frames/review/01.png",
+          "width": 192,
+          "height": 208,
+          "nontransparent_pixels": 16057,
+          "bbox": [
+            6,
+            37,
+            186,
+            173
+          ],
+          "edge_pixels": 0,
+          "chroma_adjacent_pixels": 616
+        },
+        {
+          "index": 2,
+          "file": "artwork/mola-rainbow-v2/qa/rows/review/frames/review/02.png",
+          "width": 192,
+          "height": 208,
+          "nontransparent_pixels": 15402,
+          "bbox": [
+            6,
+            42,
+            186,
+            173
+          ],
+          "edge_pixels": 0,
+          "chroma_adjacent_pixels": 541
+        },
+        {
+          "index": 3,
+          "file": "artwork/mola-rainbow-v2/qa/rows/review/frames/review/03.png",
+          "width": 192,
+          "height": 208,
+          "nontransparent_pixels": 15426,
+          "bbox": [
+            6,
+            41,
+            186,
+            173
+          ],
+          "edge_pixels": 0,
+          "chroma_adjacent_pixels": 533
+        },
+        {
+          "index": 4,
+          "file": "artwork/mola-rainbow-v2/qa/rows/review/frames/review/04.png",
+          "width": 192,
+          "height": 208,
+          "nontransparent_pixels": 16333,
+          "bbox": [
+            6,
+            34,
+            186,
+            173
+          ],
+          "edge_pixels": 0,
+          "chroma_adjacent_pixels": 530
+        },
+        {
+          "index": 5,
+          "file": "artwork/mola-rainbow-v2/qa/rows/review/frames/review/05.png",
+          "width": 192,
+          "height": 208,
+          "nontransparent_pixels": 16405,
+          "bbox": [
+            5,
+            34,
+            186,
+            173
+          ],
+          "edge_pixels": 0,
+          "chroma_adjacent_pixels": 514
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,112 @@
+{
+  "ok": true,
+  "frames_root": "artwork/mola-rainbow-v2/qa/rows/waiting/frames",
+  "states": [
+    "waiting"
+  ],
+  "errors": [],
+  "warnings": [],
+  "rows": [
+    {
+      "state": "waiting",
+      "expected_frames": 6,
+      "actual_frames": 6,
+      "extraction_method": "components",
+      "ok": true,
+      "errors": [],
+      "warnings": [],
+      "frames": [
+        {
+          "index": 0,
+          "file": "artwork/mola-rainbow-v2/qa/rows/waiting/frames/waiting/00.png",
+          "width": 192,
+          "height": 208,
+          "nontransparent_pixels": 16153,
+          "bbox": [
+            5,
+            39,
+            187,
+            175
+          ],
+          "edge_pixels": 0,
+          "chroma_adjacent_pixels": 695
+        },
+        {
+          "index": 1,
+          "file": "artwork/mola-rainbow-v2/qa/rows/waiting/frames/waiting/01.png",
+          "width": 192,
+          "height": 208,
+          "nontransparent_pixels": 16478,
+          "bbox": [
+            5,
+            38,
+            187,
+            175
+          ],
+          "edge_pixels": 0,
+          "chroma_adjacent_pixels": 638
+        },
+        {
+          "index": 2,
+          "file": "artwork/mola-rainbow-v2/qa/rows/waiting/frames/waiting/02.png",
+          "width": 192,
+          "height": 208,
+          "nontransparent_pixels": 16986,
+          "bbox": [
+            5,
+            33,
+            187,
+            175
+          ],
+          "edge_pixels": 0,
+          "chroma_adjacent_pixels": 584
+        },
+        {
+          "index": 3,
+          "file": "artwork/mola-rainbow-v2/qa/rows/waiting/frames/waiting/03.png",
+          "width": 192,
+          "height": 208,
+          "nontransparent_pixels": 16882,
+          "bbox": [
+            5,
+            33,
+            186,
+            175
+          ],
+          "edge_pixels": 0,
+          "chroma_adjacent_pixels": 692
+        },
+        {
+          "index": 4,
+          "file": "artwork/mola-rainbow-v2/qa/rows/waiting/frames/waiting/04.png",
+          "width": 192,
+          "height": 208,
+          "nontransparent_pixels": 16503,
+          "bbox": [
+            5,
+            38,
+            187,
+            175
+          ],
+          "edge_pixels": 0,
+          "chroma_adjacent_pixels": 628
+        },
+        {
+          "index": 5,
+          "file": "artwork/mola-rainbow-v2/qa/rows/waiting/frames/waiting/05.png",
+          "width": 192,
+          "height": 208,
+          "nontransparent_pixels": 16145,
+          "bbox": [
+            5,
+            40,
+            187,
+            175
+          ],
+          "edge_pixels": 0,
+          "chroma_adjacent_pixels": 621
+        }
+      ]
+    }
+  ]
+}
