@@ -11,6 +11,7 @@ VPC_ID="${AWS_VPC_ID:?AWS_VPC_ID required}"
 SUBNET_ID="${AWS_SUBNET_ID:?AWS_SUBNET_ID required}"
 INSTANCE_TYPE="${AWS_INSTANCE_TYPE:-t4g.micro}"
 ENV_NAME="${AWS_ENVIRONMENT_NAME:-demo}"
+CORS_ORIGINS="${AWS_CORS_ORIGINS:-http://localhost:3000,http://127.0.0.1:3000,https://dsh3ja1i4695p.cloudfront.net,https://d10ry6ff7l79jo.cloudfront.net}"
 
 aws --region "$REGION" sts get-caller-identity >/dev/null
 echo "AWS credentials validated."
@@ -30,18 +31,39 @@ aws --region "$REGION" s3 cp "$BUNDLE" "s3://${BUCKET}/${KEY}" --only-show-error
 STATUS=$(aws --region "$REGION" cloudformation describe-stacks --stack-name "$STACK" \
   --query 'Stacks[0].StackStatus' --output text 2>/dev/null || echo 'DOES_NOT_EXIST')
 
-CORS_ORIGINS="${AWS_CORS_ORIGINS:-http://localhost:3000,http://127.0.0.1:3000,https://dsh3ja1i4695p.cloudfront.net,https://d10ry6ff7l79jo.cloudfront.net}"
+PARAMS_FILE=$(mktemp)
+trap 'rm -f "$PARAMS_FILE"' EXIT
 
-PARAMS=(
-  "ParameterKey=ArtifactBucket,ParameterValue=${BUCKET}"
-  "ParameterKey=ArtifactKey,ParameterValue=${KEY}"
-  "ParameterKey=ArtifactSha256,ParameterValue=${SHA256}"
-  "ParameterKey=VpcId,ParameterValue=${VPC_ID}"
-  "ParameterKey=SubnetId,ParameterValue=${SUBNET_ID}"
-  "ParameterKey=InstanceType,ParameterValue=${INSTANCE_TYPE}"
-  "ParameterKey=EnvironmentName,ParameterValue=${ENV_NAME}"
-  "ParameterKey=CorsOrigins,ParameterValue=${CORS_ORIGINS}"
-)
+write_params() {
+  # JSON avoids AWS CLI splitting comma-rich ParameterValue (CORS list).
+  local mode="$1"
+  python3 - "$PARAMS_FILE" "$mode" <<'PY'
+import json, os, sys
+path, mode = sys.argv[1], sys.argv[2]
+params = [
+    {"ParameterKey": "ArtifactBucket", "ParameterValue": os.environ["BUCKET"]},
+    {"ParameterKey": "ArtifactKey", "ParameterValue": os.environ["KEY"]},
+    {"ParameterKey": "ArtifactSha256", "ParameterValue": os.environ["SHA256"]},
+    {"ParameterKey": "VpcId", "ParameterValue": os.environ["VPC_ID"]},
+    {"ParameterKey": "SubnetId", "ParameterValue": os.environ["SUBNET_ID"]},
+    {"ParameterKey": "InstanceType", "ParameterValue": os.environ["INSTANCE_TYPE"]},
+    {"ParameterKey": "EnvironmentName", "ParameterValue": os.environ["ENV_NAME"]},
+    {"ParameterKey": "CorsOrigins", "ParameterValue": os.environ["CORS_ORIGINS"]},
+]
+if mode == "create":
+    params.append({"ParameterKey": "OriginSecretHeader", "ParameterValue": os.environ["ORIGIN_SECRET"]})
+else:
+    params.extend([
+        {"ParameterKey": "OriginSecretHeader", "UsePreviousValue": True},
+        {"ParameterKey": "CloudFrontPrefixListId", "UsePreviousValue": True},
+        {"ParameterKey": "AmiId", "UsePreviousValue": True},
+    ])
+with open(path, "w", encoding="utf-8") as fh:
+    json.dump(params, fh)
+PY
+}
+
+export BUCKET KEY SHA256 VPC_ID SUBNET_ID INSTANCE_TYPE ENV_NAME CORS_ORIGINS
 
 if [[ "$STATUS" == "DOES_NOT_EXIST" ]]; then
   if [[ "${ALLOW_STACK_CREATE:-}" != "1" && "${ENV_NAME}" != "staging" ]]; then
@@ -49,42 +71,36 @@ if [[ "$STATUS" == "DOES_NOT_EXIST" ]]; then
     exit 2
   fi
   ORIGIN_SECRET="${ORIGIN_SECRET_HEADER:-$(python3 -c 'import secrets; print(secrets.token_hex(32))')}"
+  export ORIGIN_SECRET
   echo "Creating stack ${STACK} (env=${ENV_NAME}) with generated OriginSecretHeader."
-  CREATE_PARAMS=(
-    "${PARAMS[@]}"
-    "ParameterKey=OriginSecretHeader,ParameterValue=${ORIGIN_SECRET}"
-  )
+  write_params create
   aws --region "$REGION" cloudformation create-stack \
     --stack-name "$STACK" \
     --template-body "file://infra/aws/template.yaml" \
-    --parameters "${CREATE_PARAMS[@]}" \
+    --parameters "file://${PARAMS_FILE}" \
     --capabilities CAPABILITY_IAM \
     >/dev/null
   aws --region "$REGION" cloudformation wait stack-create-complete --stack-name "$STACK"
 else
-  # Keep existing origin verify secret (NoEcho) on updates.
-  PARAMS+=(
-    "ParameterKey=OriginSecretHeader,UsePreviousValue=true"
-    "ParameterKey=CloudFrontPrefixListId,UsePreviousValue=true"
-    "ParameterKey=AmiId,UsePreviousValue=true"
-  )
-
-  aws --region "$REGION" cloudformation update-stack \
+  write_params update
+  set +e
+  UPDATE_OUT=$(aws --region "$REGION" cloudformation update-stack \
     --stack-name "$STACK" \
     --template-body "file://infra/aws/template.yaml" \
-    --parameters "${PARAMS[@]}" \
-    --capabilities CAPABILITY_IAM \
-    >/dev/null || {
-      # No-op updates return ValidationError; treat as success if stack is healthy.
-      if aws --region "$REGION" cloudformation describe-stacks --stack-name "$STACK" \
-        --query 'Stacks[0].StackStatus' --output text | grep -Eq 'COMPLETE$'; then
-        echo "No stack update required (or already current)."
-      else
-        exit 1
-      fi
-    }
-
-  aws --region "$REGION" cloudformation wait stack-update-complete --stack-name "$STACK" 2>/dev/null || true
+    --parameters "file://${PARAMS_FILE}" \
+    --capabilities CAPABILITY_IAM 2>&1)
+  UPDATE_RC=$?
+  set -e
+  if [[ $UPDATE_RC -ne 0 ]]; then
+    if echo "$UPDATE_OUT" | grep -qi 'No updates are to be performed'; then
+      echo "No stack update required (or already current)."
+    else
+      echo "$UPDATE_OUT" >&2
+      exit 1
+    fi
+  else
+    aws --region "$REGION" cloudformation wait stack-update-complete --stack-name "$STACK"
+  fi
 fi
 BASE=$(aws --region "$REGION" cloudformation describe-stacks --stack-name "$STACK" \
   --query "Stacks[0].Outputs[?OutputKey=='CloudFrontBaseUrl'].OutputValue | [0]" --output text)
