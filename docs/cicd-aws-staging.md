@@ -18,6 +18,19 @@ Staging pode **criar** o stack automaticamente (`ALLOW_STACK_CREATE=1`, `Environ
 Defaults: `resolveqa-staging-backend` / `resolveqa-staging-frontend`.
 O front resolve a API via `RESOLVEQA_API_URL_STAGING` ou output `CloudFrontBaseUrl` do stack backend.
 
+### IAM (obrigatório uma vez)
+O role OIDC `ResolveQAGitHubActionsDeploy` precisa de `cloudformation:CreateStack` nos stacks staging.
+Com sessão admin local (`aws login --profile resolveqa`):
+
+```bash
+aws iam put-role-policy \
+  --role-name ResolveQAGitHubActionsDeploy \
+  --policy-name ResolveQAStagingStacks \
+  --policy-document file://infra/aws/github-actions-staging-iam.json
+```
+
+Depois: Actions → `Deploy AWS staging (backend)` → Run workflow (branch `staging`).
+
 Runtime no staging (UserData):
 - API + worker no mesmo host
 - `RESOLVEQA_CASE_STORE=file`, `RESOLVEQA_QUEUE=file`
