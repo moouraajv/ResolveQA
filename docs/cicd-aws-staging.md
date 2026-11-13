@@ -7,15 +7,16 @@
 - **Deploy staging:** automático em todo push na `staging` (workflow `deploy-aws-staging.yml`).
 - **Merge para `main`:** só depois de validar no staging.
 
-## Secrets / variables (GitHub environment `staging`)
-- Secrets: `AWS_ROLE_ARN`, `AWS_REGION`, `AWS_ARTIFACT_BUCKET`, `AWS_STACK_NAME_STAGING`
-- Variables: `AWS_VPC_ID`, `AWS_SUBNET_ID`, `AWS_INSTANCE_TYPE`
+## Secrets / variables (repo ou environment)
+- Secrets: `AWS_ROLE_ARN`, `AWS_REGION`, `AWS_ARTIFACT_BUCKET`, `AWS_STACK_NAME_STAGING`, `AWS_STACK_NAME_FRONT_STAGING`
+- Variables: `AWS_VPC_ID`, `AWS_SUBNET_ID`, `AWS_INSTANCE_TYPE` (opcional: `RESOLVEQA_API_URL_STAGING`)
 
-Use um stack **separado** do demo/prod (ex.: `resolveqa-staging-backend`).
+Stacks **separados** do demo/prod. O workflow de staging **não** faz fallback para `AWS_STACK_NAME` (produção).
 
 ## Bootstrap
 Staging pode **criar** o stack automaticamente (`ALLOW_STACK_CREATE=1`, `EnvironmentName=staging`).
-Default do nome: `resolveqa-staging-backend` (override com secret `AWS_STACK_NAME_STAGING`).
+Defaults: `resolveqa-staging-backend` / `resolveqa-staging-frontend`.
+O front resolve a API via `RESOLVEQA_API_URL_STAGING` ou output `CloudFrontBaseUrl` do stack backend.
 
 Runtime no staging (UserData):
 - API + worker no mesmo host

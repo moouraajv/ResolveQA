@@ -42,7 +42,8 @@ jobs:
       - name: Deploy staging backend stack
         env:
           AWS_REGION: ${{ secrets.AWS_REGION }}
-          AWS_STACK_NAME: ${{ secrets.AWS_STACK_NAME_STAGING || secrets.AWS_STACK_NAME || 'resolveqa-staging-backend' }}
+          # Never fall back to production AWS_STACK_NAME.
+          AWS_STACK_NAME: ${{ secrets.AWS_STACK_NAME_STAGING || 'resolveqa-staging-backend' }}
           AWS_ARTIFACT_BUCKET: ${{ secrets.AWS_ARTIFACT_BUCKET }}
           AWS_VPC_ID: ${{ vars.AWS_VPC_ID }}
           AWS_SUBNET_ID: ${{ vars.AWS_SUBNET_ID }}
@@ -56,7 +57,7 @@ jobs:
       - name: Publish staging URL
         env:
           AWS_REGION: ${{ secrets.AWS_REGION }}
-          AWS_STACK_NAME: ${{ secrets.AWS_STACK_NAME_STAGING || secrets.AWS_STACK_NAME || 'resolveqa-staging-backend' }}
+          AWS_STACK_NAME: ${{ secrets.AWS_STACK_NAME_STAGING || 'resolveqa-staging-backend' }}
         run: |
           set -euo pipefail
           base=$(aws cloudformation describe-stacks --stack-name "$AWS_STACK_NAME" \

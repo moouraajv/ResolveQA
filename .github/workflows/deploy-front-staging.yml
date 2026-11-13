@@ -35,37 +35,53 @@ jobs:
       - name: Install
         run: npm ci
 
-      - name: Build staging export
-        env:
-          RESOLVEQA_MODE: production
-          RESOLVEQA_API_URL: ${{ vars.RESOLVEQA_API_URL_STAGING || vars.RESOLVEQA_API_URL }}
-          RESOLVEQA_SNAPSHOT_PATH: /api/snapshot
-          RESOLVEQA_EVENTS_PATH: /api/events
-          RESOLVEQA_CASE_IDS: ${{ vars.RESOLVEQA_CASE_IDS_STAGING }}
-        run: |
-          set -euo pipefail
-          if [ -z "${RESOLVEQA_API_URL:-}" ]; then
-            echo "Missing RESOLVEQA_API_URL_STAGING (or RESOLVEQA_API_URL)." >&2
-            exit 1
-          fi
-          npm run build:aws
-
       - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: ${{ secrets.AWS_REGION }}
 
+      - name: Resolve staging API URL
+        id: api
+        env:
+          AWS_REGION: ${{ secrets.AWS_REGION }}
+          BACKEND_STACK: ${{ secrets.AWS_STACK_NAME_STAGING || 'resolveqa-staging-backend' }}
+          RESOLVEQA_API_URL_STAGING: ${{ vars.RESOLVEQA_API_URL_STAGING }}
+        working-directory: .
+        run: |
+          set -euo pipefail
+          api="${RESOLVEQA_API_URL_STAGING:-}"
+          if [ -z "$api" ]; then
+            api=$(aws cloudformation describe-stacks --stack-name "$BACKEND_STACK" \
+              --query "Stacks[0].Outputs[?OutputKey=='CloudFrontBaseUrl'].OutputValue | [0]" --output text || true)
+          fi
+          if [ -z "$api" ] || [ "$api" = "None" ]; then
+            echo "Missing RESOLVEQA_API_URL_STAGING and backend stack $BACKEND_STACK has no CloudFrontBaseUrl yet." >&2
+            exit 1
+          fi
+          echo "api_url=$api" >> "$GITHUB_OUTPUT"
+          echo "Using API URL: $api"
+
+      - name: Build staging export
+        env:
+          RESOLVEQA_MODE: production
+          RESOLVEQA_API_URL: ${{ steps.api.outputs.api_url }}
+          RESOLVEQA_SNAPSHOT_PATH: /api/snapshot
+          RESOLVEQA_EVENTS_PATH: /api/events
+          RESOLVEQA_CASE_IDS: ${{ vars.RESOLVEQA_CASE_IDS_STAGING }}
+        run: npm run build:aws
+
       - name: Deploy staging CloudFront/S3
         env:
           AWS_REGION: ${{ secrets.AWS_REGION }}
-        run: npm run deploy:aws -- "" "${{ secrets.AWS_REGION }}" "${{ secrets.AWS_STACK_NAME_FRONT_STAGING || secrets.AWS_STACK_NAME_STAGING || 'resolveqa-staging-frontend' }}"
+          FRONT_STACK: ${{ secrets.AWS_STACK_NAME_FRONT_STAGING || 'resolveqa-staging-frontend' }}
+        run: npm run deploy:aws -- "" "${AWS_REGION}" "${FRONT_STACK}"
 
       - name: Smoke staging SiteUrl + backend health
         env:
           AWS_REGION: ${{ secrets.AWS_REGION }}
-          STACK: ${{ secrets.AWS_STACK_NAME_FRONT_STAGING || secrets.AWS_STACK_NAME_STAGING || 'resolveqa-staging-frontend' }}
-          RESOLVEQA_API_URL: ${{ vars.RESOLVEQA_API_URL_STAGING || vars.RESOLVEQA_API_URL }}
+          STACK: ${{ secrets.AWS_STACK_NAME_FRONT_STAGING || 'resolveqa-staging-frontend' }}
+          RESOLVEQA_API_URL: ${{ steps.api.outputs.api_url }}
         working-directory: .
         run: |
           set -euo pipefail
