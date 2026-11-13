@@ -126,6 +126,7 @@ def run_smoke_tests(base_url: str, origin_secret: str | None = None) -> bool:
             check("Negative Test: Request with invalid origin header rejected", False, f"Exception: {exc}")
 
     # 1. GET /health
+    allowed_storage = {"ephemeral-in-memory", "file", "dynamodb"}
     try:
         st, data = _request(base_url, "GET", "/health", headers=default_headers)
         check(
@@ -133,7 +134,7 @@ def run_smoke_tests(base_url: str, origin_secret: str | None = None) -> bool:
             st == 200
             and isinstance(data, dict)
             and data.get("ok") is True
-            and data.get("storage") == "ephemeral-in-memory",
+            and data.get("storage") in allowed_storage,
             f"status={st}, storage={data.get('storage') if isinstance(data, dict) else 'non-json'}",
         )
     except Exception as exc:
@@ -189,13 +190,14 @@ def run_smoke_tests(base_url: str, origin_secret: str | None = None) -> bool:
             },
             headers=default_headers,
         )
-        is_created = st == 201 and isinstance(data, dict) and "case" in data
+        # 201 sync create; 202 when RESOLVEQA_QUEUE is enabled (worker spine).
+        is_created = st in (201, 202) and isinstance(data, dict) and "case" in data
         if is_created:
             created_case_id = data["case"].get("case_id")
         check(
             "POST /api/cases (valid)",
             bool(is_created and created_case_id),
-            f"status={st}, case_id={created_case_id}",
+            f"status={st}, case_id={created_case_id}, queued={data.get('queued') if isinstance(data, dict) else None}",
         )
     except Exception as exc:
         check("POST /api/cases (valid)", False, f"Exception: {exc}")
@@ -247,7 +249,7 @@ def run_smoke_tests(base_url: str, origin_secret: str | None = None) -> bool:
             headers=default_headers,
         )
         chat_ok = (
-            st == 201
+            st in (201, 202)
             and isinstance(data, dict)
             and data.get("channel_label") == "Canal simulado"
             and data.get("case", {}).get("channel") == "simulated_chat"
