@@ -72,8 +72,8 @@ Estados: `created` → `triaging` → `triaged` → `reproducing` → `reproduce
 
 ## Demo
 
-- Backend (staging): https://d2a053hki46q2m.cloudfront.net  
+- Backend (staging): https://dec5ise4h3d48.cloudfront.net  
 - Quadro Mola: https://dsh3ja1i4695p.cloudfront.net/quadro  
-- Intake: https://d2a053hki46q2m.cloudfront.net/form  
+- Intake: https://dec5ise4h3d48.cloudfront.net/form  
 
 Detalhes técnicos: [`docs/rfc/0001-arquitetura-e-contratos.md`](../rfc/0001-arquitetura-e-contratos.md), [`docs/cloud-agents.md`](../cloud-agents.md), [`docs/PRD.md`](../PRD.md).

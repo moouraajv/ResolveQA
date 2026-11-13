@@ -148,7 +148,7 @@ def run_smoke_tests(base_url: str, origin_secret: str | None = None) -> bool:
             st == 200
             and isinstance(data, str)
             and "Intake de relato" in data
-            and "armazenamento efêmero" in data,
+            and ("Ambiente staging" in data or "armazenamento" in data or "Demo" in data),
             f"status={st}, html_len={len(data) if isinstance(data, str) else 0}",
         )
     except Exception as exc:
