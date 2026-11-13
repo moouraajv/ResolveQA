@@ -89,6 +89,14 @@ def build_chat_html(
     client_val = html.escape(preset_client_id, quote=True)
     repo_val = html.escape(preset_repo_ref, quote=True)
     label = html.escape(SIMULATED_CHANNEL_LABEL, quote=True)
+    from resolveqa.env_label import environment_banner, environment_name
+
+    env = environment_name()
+    env_banner = html.escape(environment_banner(), quote=True)
+    env_sub = html.escape(
+        f"{env} · não é WhatsApp real · progresso só via worker/agentes",
+        quote=True,
+    )
 
     return f"""<!DOCTYPE html>
 <html lang="pt-BR">
@@ -238,9 +246,9 @@ def build_chat_html(
 <body>
   <div class="channel-banner" role="status" data-channel-label="simulated">
     {label}
-    <span class="sub">Demo local · não é WhatsApp real · sem agente automático inventando progresso</span>
+    <span class="sub">{env_sub}</span>
   </div>
-  <div class="ephemeral">Armazenamento efêmero em memória — sem persistência nem autenticação.</div>
+  <div class="ephemeral">{env_banner}</div>
   {notice_block}
   <main>
     <div class="thread" aria-live="polite">{thread}</div>

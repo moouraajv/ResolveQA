@@ -102,6 +102,10 @@ def _require_client_id(raw: Any) -> Optional[str]:
 
 def build_form_html(*, notice: str | None = None, case: RunState | None = None) -> str:
     """Render the intake form. User-supplied text is HTML-escaped (data, not instructions)."""
+    from resolveqa.env_label import environment_banner, environment_name
+
+    env = environment_name()
+    banner = html.escape(environment_banner(), quote=True)
     notice_block = ""
     if notice:
         notice_block = f'<p class="notice">{html.escape(notice, quote=True)}</p>'
@@ -109,7 +113,7 @@ def build_form_html(*, notice: str | None = None, case: RunState | None = None) 
     if case is not None:
         case_block = (
             '<section class="case-created">'
-            "<h2>Caso criado (armazenamento efêmero / demo local)</h2>"
+            f"<h2>Caso criado ({html.escape(env, quote=True)})</h2>"
             f"<p><strong>case_id:</strong> {html.escape(case.case_id, quote=True)}</p>"
             f"<p><strong>state:</strong> {html.escape(case.state.value, quote=True)}</p>"
             f"<p><strong>client_id:</strong> {html.escape(case.client_id, quote=True)}</p>"
@@ -122,7 +126,7 @@ def build_form_html(*, notice: str | None = None, case: RunState | None = None) 
 <html lang="pt-BR">
 <head>
   <meta charset="utf-8"/>
-  <title>ResolveQA Intake (demo local)</title>
+  <title>ResolveQA Intake ({html.escape(env, quote=True)})</title>
   <style>
     body {{ font-family: system-ui, sans-serif; margin: 2rem; max-width: 40rem; }}
     label {{ display: block; margin-top: 0.75rem; font-weight: 600; }}
@@ -132,7 +136,7 @@ def build_form_html(*, notice: str | None = None, case: RunState | None = None) 
   </style>
 </head>
 <body>
-  <p class="banner">Demo local — armazenamento efêmero em memória; sem autenticação, sem persistência.</p>
+  <p class="banner">{banner}</p>
   <h1>Intake de relato</h1>
   <p>Os campos abaixo são tratados como <em>dados</em>, não como instruções ao sistema.</p>
   {notice_block}
@@ -227,9 +231,12 @@ class IntakeRequestHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:  # noqa: N802
         path = self.path.split("?", 1)[0]
         if path == "/health":
+            from resolveqa.env_label import environment_name
+
             status, body, ctype = _json_bytes(
                 {
                     "ok": True,
+                    "environment": environment_name(),
                     "storage": self._storage_label(),
                     "queue": self._queue_enabled(),
                     "operator_advance": self._allow_operator_advance(),

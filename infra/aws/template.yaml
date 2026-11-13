@@ -134,6 +134,8 @@ Resources:
       Tags:
         - Key: Name
           Value: !Sub resolveqa-backend-${EnvironmentName}
+        - Key: Environment
+          Value: !Ref EnvironmentName
         - Key: Project
           Value: ResolveQA
         - Key: Runtime
@@ -194,6 +196,7 @@ Resources:
             RESOLVEQA_PORT=8080
             RESOLVEQA_ORIGIN_SECRET=${OriginSecretHeader}
             RESOLVEQA_ROOT=/opt/resolveqa
+            RESOLVEQA_ENVIRONMENT=${EnvironmentName}
             RESOLVEQA_CASE_STORE=file
             RESOLVEQA_QUEUE=file
             RESOLVEQA_ALLOW_OPERATOR_ADVANCE=0
@@ -287,7 +290,7 @@ Resources:
     Properties:
       DistributionConfig:
         Enabled: true
-        Comment: ResolveQA Ephemeral Demo Backend CDN (HTTPS entry point)
+        Comment: !Sub "ResolveQA ${EnvironmentName} backend CDN (HTTPS)"
         Origins:
           - Id: ResolveQABackendOrigin
             DomainName: !GetAtt BackendInstance.PublicDnsName

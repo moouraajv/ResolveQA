@@ -49,7 +49,7 @@ export function WorkspaceShell({
           <span className="workspace-monogram">RQ</span>
           <div>
             <strong>ResolveQA</strong>
-            <span>Central de acompanhamento</span>
+            <span>Staging · central de acompanhamento</span>
           </div>
         </div>
         <span className="sidebar-caption">Área de trabalho</span>
