@@ -16,7 +16,7 @@ export function SiteHeader({ demo = true }: { demo?: boolean }) {
     <header className="site-header">
       <Link className="brand" href="/" aria-label="Mola, início">
         <span className="brand-symbol">▥</span>MOLA
-        <span className="brand-sub">agent workspace</span>
+        <span className="brand-sub">staging · agentes</span>
       </Link>
       <nav aria-label="Navegação principal">
         {links.map(n => (
@@ -26,15 +26,13 @@ export function SiteHeader({ demo = true }: { demo?: boolean }) {
         ))}
       </nav>
       <div className="header-end">
-        {demo ? (
-          <span className="demo-badge">
-            <span />
-            Modo demonstração
-          </span>
-        ) : null}
+        <span className="demo-badge">
+          <span />
+          Staging
+        </span>
         <a
           className="github-link"
-          href="https://github.com/ThiagoVenturaV/ResolveQA-front"
+          href="https://github.com/moouraajv/ResolveQA"
           target="_blank"
           rel="noreferrer"
           aria-label="Abrir ResolveQA no GitHub"
