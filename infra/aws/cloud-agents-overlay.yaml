@@ -1,0 +1,296 @@
+# Overlay resources for the ResolveQA cloud agent spine.
+# Merge conceptually into the demo stack (or deploy as nested stack parameters).
+# Requires: existing VPC/Subnet, ArtifactBucket/Key/Sha256, OriginSecretHeader.
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  ResolveQA cloud agents overlay — DynamoDB cases, SQS+DLQ, S3 evidence,
+  EFS shared runs/, dedicated worker EC2. API remains behind CloudFront.
+
+Parameters:
+  EnvironmentName:
+    Type: String
+    Default: demo
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+  SubnetId:
+    Type: AWS::EC2::Subnet::Id
+  ArtifactBucket:
+    Type: String
+  ArtifactKey:
+    Type: String
+  ArtifactSha256:
+    Type: String
+    AllowedPattern: ^[a-fA-F0-9]{64}$
+  OriginSecretHeader:
+    Type: String
+    NoEcho: true
+  InstanceType:
+    Type: String
+    Default: t4g.micro
+  AmiId:
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+    Default: /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-arm64
+  ApiInstanceId:
+    Type: String
+    Description: Existing API EC2 instance id to attach EFS/SG (manual follow-up) or leave empty
+    Default: ""
+
+Resources:
+  CasesTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub resolveqa-cases-${EnvironmentName}
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: case_id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: case_id
+          KeyType: HASH
+      Tags:
+        - Key: Project
+          Value: ResolveQA
+
+  EvidenceBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub resolveqa-evidence-${EnvironmentName}-${AWS::AccountId}
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      Tags:
+        - Key: Project
+          Value: ResolveQA
+
+  CaseDLQ:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub resolveqa-cases-dlq-${EnvironmentName}
+      MessageRetentionPeriod: 1209600
+
+  CaseQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub resolveqa-cases-${EnvironmentName}
+      VisibilityTimeout: 900
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt CaseDLQ.Arn
+        maxReceiveCount: 3
+
+  RunsFileSystem:
+    Type: AWS::EFS::FileSystem
+    Properties:
+      Encrypted: true
+      PerformanceMode: generalPurpose
+      ThroughputMode: bursting
+      FileSystemTags:
+        - Key: Name
+          Value: !Sub resolveqa-runs-${EnvironmentName}
+        - Key: Project
+          Value: ResolveQA
+
+  EfsSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: NFS from ResolveQA API/worker to EFS
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 2049
+          ToPort: 2049
+          SourceSecurityGroupId: !Ref WorkerSecurityGroup
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          CidrIp: 0.0.0.0/0
+
+  RunsMountTarget:
+    Type: AWS::EFS::MountTarget
+    Properties:
+      FileSystemId: !Ref RunsFileSystem
+      SubnetId: !Ref SubnetId
+      SecurityGroupIds:
+        - !Ref EfsSecurityGroup
+
+  WorkerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: WorkerAgentAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                Resource: !Sub arn:aws:s3:::${ArtifactBucket}/${ArtifactKey}
+              - Effect: Allow
+                Action:
+                  - sqs:ReceiveMessage
+                  - sqs:DeleteMessage
+                  - sqs:ChangeMessageVisibility
+                  - sqs:GetQueueAttributes
+                Resource: !GetAtt CaseQueue.Arn
+              - Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                  - dynamodb:PutItem
+                  - dynamodb:Scan
+                  - dynamodb:UpdateItem
+                Resource: !GetAtt CasesTable.Arn
+              - Effect: Allow
+                Action:
+                  - s3:PutObject
+                  - s3:GetObject
+                Resource: !Sub ${EvidenceBucket.Arn}/*
+      Tags:
+        - Key: Project
+          Value: ResolveQA
+
+  WorkerInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles:
+        - !Ref WorkerRole
+
+  WorkerSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: ResolveQA worker (no public HTTP)
+      VpcId: !Ref VpcId
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: !Sub resolveqa-worker-sg-${EnvironmentName}
+
+  # Allow API instances (same VPC) to use EFS — callers should also attach this SG to API EC2.
+  EfsFromApiRule:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !Ref EfsSecurityGroup
+      IpProtocol: tcp
+      FromPort: 2049
+      ToPort: 2049
+      CidrIp: 0.0.0.0/0
+      Description: Tighten to API SG in production; open temporarily for overlay bootstrap
+
+  WorkerInstance:
+    Type: AWS::EC2::Instance
+    DependsOn:
+      - RunsMountTarget
+    Properties:
+      InstanceType: !Ref InstanceType
+      ImageId: !Ref AmiId
+      SubnetId: !Ref SubnetId
+      IamInstanceProfile: !Ref WorkerInstanceProfile
+      SecurityGroupIds:
+        - !Ref WorkerSecurityGroup
+      Tags:
+        - Key: Name
+          Value: !Sub resolveqa-worker-${EnvironmentName}
+        - Key: Project
+          Value: ResolveQA
+        - Key: Role
+          Value: cloud-agent-worker
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          set -euo pipefail
+          dnf update -y
+          dnf install -y python3.11 amazon-efs-utils aws-cli tar gzip
+          mkdir -p /opt/resolveqa /mnt/resolveqa-runs
+          mount -t efs -o tls ${RunsFileSystem}:/ /mnt/resolveqa-runs
+          echo "${RunsFileSystem}:/ /mnt/resolveqa-runs efs _netdev,tls 0 0" >> /etc/fstab
+          aws s3 cp "s3://${ArtifactBucket}/${ArtifactKey}" /tmp/bundle.tar.gz
+          echo "${ArtifactSha256}  /tmp/bundle.tar.gz" | sha256sum -c -
+          tar -xzf /tmp/bundle.tar.gz -C /opt/resolveqa
+          useradd -r -s /sbin/nologin resolveqa || true
+          mkdir -p /mnt/resolveqa-runs/runs
+          ln -sfn /mnt/resolveqa-runs/runs /opt/resolveqa/runs
+          chown -R resolveqa:resolveqa /opt/resolveqa /mnt/resolveqa-runs
+          mkdir -p /etc/resolveqa
+          cat > /etc/resolveqa/worker.env <<EOF
+          RESOLVEQA_ROOT=/opt/resolveqa
+          RESOLVEQA_CASE_STORE=file
+          RESOLVEQA_QUEUE=sqs
+          RESOLVEQA_SQS_URL=${CaseQueue.QueueUrl}
+          RESOLVEQA_DDB_TABLE=${CasesTable}
+          RESOLVEQA_EVIDENCE_BUCKET=${EvidenceBucket}
+          RESOLVEQA_LIVE=1
+          PYTHONPATH=/opt/resolveqa/src
+          PYTHONUNBUFFERED=1
+          EOF
+          chmod 600 /etc/resolveqa/worker.env
+          cat > /etc/systemd/system/resolveqa-worker.service <<'EOF'
+          [Unit]
+          Description=ResolveQA cloud agent worker
+          After=network-online.target
+          [Service]
+          Type=simple
+          User=resolveqa
+          WorkingDirectory=/opt/resolveqa
+          EnvironmentFile=/etc/resolveqa/worker.env
+          ExecStart=/usr/bin/python3.11 -m resolveqa.worker --store file --queue sqs
+          Restart=on-failure
+          RestartSec=5
+          [Install]
+          WantedBy=multi-user.target
+          EOF
+          systemctl daemon-reload
+          systemctl enable --now resolveqa-worker
+
+  ApiQueueSendPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      Description: Allow API role to enqueue cases and read/write DynamoDB
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Action:
+              - sqs:SendMessage
+              - sqs:GetQueueAttributes
+            Resource: !GetAtt CaseQueue.Arn
+          - Effect: Allow
+            Action:
+              - dynamodb:GetItem
+              - dynamodb:PutItem
+              - dynamodb:Scan
+              - dynamodb:UpdateItem
+            Resource: !GetAtt CasesTable.Arn
+          - Effect: Allow
+            Action:
+              - s3:GetObject
+              - s3:PutObject
+            Resource: !Sub ${EvidenceBucket.Arn}/*
+
+Outputs:
+  CaseQueueUrl:
+    Value: !Ref CaseQueue
+  CaseDLQUrl:
+    Value: !Ref CaseDLQ
+  CasesTableName:
+    Value: !Ref CasesTable
+  EvidenceBucketName:
+    Value: !Ref EvidenceBucket
+  RunsFileSystemId:
+    Value: !Ref RunsFileSystem
+  WorkerInstanceId:
+    Value: !Ref WorkerInstance
+  ApiPolicyArn:
+    Value: !Ref ApiQueueSendPolicy
+    Description: Attach this managed policy to the existing API instance role

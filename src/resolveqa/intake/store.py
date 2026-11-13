@@ -27,6 +27,14 @@ class EphemeralCaseStore:
         with self._lock:
             return self._cases.get(case_id)
 
+    def list_cases(self) -> list[RunState]:
+        with self._lock:
+            return sorted(
+                self._cases.values(),
+                key=lambda c: c.updated_at,
+                reverse=True,
+            )
+
     def __len__(self) -> int:
         with self._lock:
             return len(self._cases)

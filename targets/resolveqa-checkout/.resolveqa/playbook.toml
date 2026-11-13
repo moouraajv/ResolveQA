@@ -1,0 +1,24 @@
+version = 1
+approvers = ["reviewer-lead", "reviewer-qa"]
+
+[paths]
+allowed = ["checkout.py"]
+forbidden = [".resolveqa/**", "tests/**"]
+
+[tests]
+protected = ["tests/**"]
+
+[reply]
+tone = "friendly"
+max_chars = 280
+
+[docs]
+changelog_path = "CHANGELOG.md"
+technical_notes_dir = "technical_notes"
+kb_drafts_dir = "kb_drafts"
+
+[limits]
+max_fix_attempts = 2
+max_llm_calls = 10
+test_timeout_s = 300
+max_files_changed = 2

@@ -14,6 +14,8 @@ from resolveqa.contracts import (
     TERMINAL_STATES,
 )
 
+from typing import Any, Optional
+
 from .store import EphemeralCaseStore
 
 # Happy-path demo progression for operator "advance" controls (pitch / Quadro).
@@ -40,13 +42,22 @@ def new_case_id() -> str:
 
 
 class Intake:
-    """Creates immutable RunState cases and records them in an ephemeral store."""
+    """Creates immutable RunState cases and records them in a case store."""
 
-    def __init__(self, store: EphemeralCaseStore | None = None) -> None:
+    def __init__(
+        self,
+        store: Any | None = None,
+        *,
+        queue: Any | None = None,
+    ) -> None:
         self.store = store if store is not None else EphemeralCaseStore()
+        self.queue = queue
 
     def create(self, report: ReportInput) -> RunState:
-        """Create a new case in `created` with a unique case_id (IntakeStage)."""
+        """Create a new case in `created` with a unique case_id (IntakeStage).
+
+        When a queue is configured, enqueues the case for the cloud worker.
+        """
         if not isinstance(report, ReportInput):
             raise ContractValidationError(
                 f"Intake.create expects ReportInput, got {type(report).__name__}."
@@ -64,6 +75,8 @@ class Intake:
             updated_at=timestamp,
         )
         self.store.put(case)
+        if self.queue is not None:
+            self.queue.enqueue(case.case_id)
         return case
 
     def get(self, case_id: str) -> RunState | None:
@@ -72,18 +85,30 @@ class Intake:
             return None
         return self.store.get(case_id.strip())
 
+    def list_cases(self) -> list[RunState]:
+        """List cases when the backing store supports it."""
+        list_fn = getattr(self.store, "list_cases", None)
+        if callable(list_fn):
+            return list(list_fn())
+        return []
+
     def advance(
         self,
         case_id: str,
         *,
         to_state: CaseState | str | None = None,
+        allow_operator_advance: bool = True,
     ) -> tuple[RunState, CaseState]:
         """Advance a case along the happy path (or to an explicit state) and persist it.
 
         Returns ``(updated_case, previous_state)``. This is an operator/demo control:
-        it updates the ephemeral store so the Quadro stays synchronized with the API.
+        it updates the store so the Quadro stays synchronized with the API.
         It does not run triage/fix/verification stages.
         """
+        if not allow_operator_advance:
+            raise ContractValidationError(
+                "operator advance disabled; cloud production runs agents via the worker queue"
+            )
         case = self.get(case_id)
         if case is None:
             raise ContractValidationError(f"case_id not found: {case_id}")

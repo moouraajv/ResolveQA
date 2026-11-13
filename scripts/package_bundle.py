@@ -97,7 +97,7 @@ def build_bundle(
 
     # Collect and sort all files deterministically
     entries: list[tuple[str, Path]] = []
-    for component in ["src", "scripts"]:
+    for component in ["src", "scripts", "config", "targets", "demo-target"]:
         comp_dir = root / component
         if not comp_dir.is_dir():
             continue
@@ -116,7 +116,7 @@ def build_bundle(
             "schema_version": "1.0",
             "commit_sha": git_info["commit_sha"],
             "dirty": git_info["dirty"],
-            "components": ["src", "scripts"],
+            "components": ["src", "scripts", "config", "targets", "demo-target"],
         },
         indent=2,
         sort_keys=True,
