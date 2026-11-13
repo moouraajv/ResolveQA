@@ -61,6 +61,12 @@ Parameters:
     Default: pl-3b927c52
     Description: AWS-managed Prefix List ID for CloudFront origin-facing IPs in us-east-1 (pl-3b927c52)
 
+  CorsOrigins:
+    Type: String
+    Default: >-
+      http://localhost:3000,http://127.0.0.1:3000,https://dsh3ja1i4695p.cloudfront.net,https://d10ry6ff7l79jo.cloudfront.net
+    Description: Comma-separated browser Origins allowed by RESOLVEQA_CORS_ORIGINS (Mola Quadro/Admin)
+
 Resources:
   BackendInstanceRole:
     Type: AWS::IAM::Role
@@ -201,6 +207,7 @@ Resources:
             RESOLVEQA_QUEUE=file
             RESOLVEQA_ALLOW_OPERATOR_ADVANCE=0
             RESOLVEQA_AGENT_MODE=general
+            RESOLVEQA_CORS_ORIGINS=${CorsOrigins}
             PYTHONDONTWRITEBYTECODE=1
             PYTHONUNBUFFERED=1
             PYTHONPATH=/opt/resolveqa/src

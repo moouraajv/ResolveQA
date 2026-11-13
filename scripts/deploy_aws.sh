@@ -30,6 +30,8 @@ aws --region "$REGION" s3 cp "$BUNDLE" "s3://${BUCKET}/${KEY}" --only-show-error
 STATUS=$(aws --region "$REGION" cloudformation describe-stacks --stack-name "$STACK" \
   --query 'Stacks[0].StackStatus' --output text 2>/dev/null || echo 'DOES_NOT_EXIST')
 
+CORS_ORIGINS="${AWS_CORS_ORIGINS:-http://localhost:3000,http://127.0.0.1:3000,https://dsh3ja1i4695p.cloudfront.net,https://d10ry6ff7l79jo.cloudfront.net}"
+
 PARAMS=(
   "ParameterKey=ArtifactBucket,ParameterValue=${BUCKET}"
   "ParameterKey=ArtifactKey,ParameterValue=${KEY}"
@@ -38,6 +40,7 @@ PARAMS=(
   "ParameterKey=SubnetId,ParameterValue=${SUBNET_ID}"
   "ParameterKey=InstanceType,ParameterValue=${INSTANCE_TYPE}"
   "ParameterKey=EnvironmentName,ParameterValue=${ENV_NAME}"
+  "ParameterKey=CorsOrigins,ParameterValue=${CORS_ORIGINS}"
 )
 
 if [[ "$STATUS" == "DOES_NOT_EXIST" ]]; then
