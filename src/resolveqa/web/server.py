@@ -69,6 +69,9 @@ _DEFAULT_RUNS_ROOT = Path("runs")
 _DEFAULT_CORS_ORIGINS = (
     "http://localhost:3000",
     "http://127.0.0.1:3000",
+    # Staging Mola (resolveqa-staging-frontend)
+    "https://dsh3ja1i4695p.cloudfront.net",
+    # Legacy demo front (kept until old CDN is fully retired)
     "https://d10ry6ff7l79jo.cloudfront.net",
 )
 
