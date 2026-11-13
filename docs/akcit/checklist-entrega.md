@@ -17,7 +17,7 @@ Tudo abaixo deve estar **anexado / linkado no GitHub** na hora do congelamento.
 |---|---|
 | Equipe | [equipe.md](equipe.md) — completar nomes da inscrição |
 | Critérios §9.1 / §9.4 | Seções no README + fluxo-agente |
-| Smoke pré-congelamento | `python3 scripts/smoke_test.py --base-url https://dec5ise4h3d48.cloudfront.net` |
+| Smoke pré-congelamento | `python3 scripts/smoke_test.py --base-url https://d3nqg1nmn3omeh.cloudfront.net` |
 
 ## 30 minutos antes do congelamento
 

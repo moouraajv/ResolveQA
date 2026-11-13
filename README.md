@@ -42,10 +42,10 @@ Apoio: [`docs/akcit/equipe.md`](docs/akcit/equipe.md) · [`docs/akcit/evolucao-r
 
 | Superfície | URL |
 |---|---|
-| Backend | https://dec5ise4h3d48.cloudfront.net |
-| Health | https://dec5ise4h3d48.cloudfront.net/health |
-| Intake (form) | https://dec5ise4h3d48.cloudfront.net/form |
-| Chat simulado | https://dec5ise4h3d48.cloudfront.net/chat |
+| Backend | https://d3nqg1nmn3omeh.cloudfront.net |
+| Health | https://d3nqg1nmn3omeh.cloudfront.net/health |
+| Intake (form) | https://d3nqg1nmn3omeh.cloudfront.net/form |
+| Chat simulado | https://d3nqg1nmn3omeh.cloudfront.net/chat |
 | Front Mola (Quadro) | https://dsh3ja1i4695p.cloudfront.net/quadro |
 | Admin | https://dsh3ja1i4695p.cloudfront.net/admin |
 
@@ -54,7 +54,7 @@ Quadro reflete o **worker real** (`create → fila → orquestrador`) — sem �
 
 ### Como ver o agente em ~2 minutos
 
-1. Abra o [form](https://dec5ise4h3d48.cloudfront.net/form) e o [Quadro](https://dsh3ja1i4695p.cloudfront.net/quadro).
+1. Abra o [form](https://d3nqg1nmn3omeh.cloudfront.net/form) e o [Quadro](https://dsh3ja1i4695p.cloudfront.net/quadro).
 2. Envie: `client_id=resolveqa`, `repo_ref=targets/resolveqa-checkout`, relato do cupom DESC10 (total deveria ser R$ 180).
 3. Acompanhe os estados até `verified` ou um terminal honesto (`needs_info`, etc.).
 
