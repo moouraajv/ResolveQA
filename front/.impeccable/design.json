@@ -1,0 +1,389 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-11-08T04:41:48.851305+00:00",
+  "title": "Design System: ResolveQA",
+  "extensions": {
+    "colorMeta": {
+      "paper": {
+        "role": "neutral",
+        "displayName": "Paper",
+        "tonalRamp": [
+          "oklch(15% 0.0106 106.59)",
+          "oklch(26% 0.0106 106.59)",
+          "oklch(38% 0.0106 106.59)",
+          "oklch(49% 0.0106 106.59)",
+          "oklch(61% 0.0106 106.59)",
+          "oklch(72% 0.0106 106.59)",
+          "oklch(84% 0.0106 106.59)",
+          "oklch(95% 0.0106 106.59)"
+        ]
+      },
+      "surface": {
+        "role": "neutral",
+        "displayName": "Surface",
+        "tonalRamp": [
+          "oklch(15% 0.0054 95.10)",
+          "oklch(26% 0.0054 95.10)",
+          "oklch(38% 0.0054 95.10)",
+          "oklch(49% 0.0054 95.10)",
+          "oklch(61% 0.0054 95.10)",
+          "oklch(72% 0.0054 95.10)",
+          "oklch(84% 0.0054 95.10)",
+          "oklch(95% 0.0054 95.10)"
+        ]
+      },
+      "ink": {
+        "role": "neutral",
+        "displayName": "Ink",
+        "tonalRamp": [
+          "oklch(15% 0.0085 137.82)",
+          "oklch(26% 0.0085 137.82)",
+          "oklch(38% 0.0085 137.82)",
+          "oklch(49% 0.0085 137.82)",
+          "oklch(61% 0.0085 137.82)",
+          "oklch(72% 0.0085 137.82)",
+          "oklch(84% 0.0085 137.82)",
+          "oklch(95% 0.0085 137.82)"
+        ]
+      },
+      "muted": {
+        "role": "neutral",
+        "displayName": "Muted",
+        "tonalRamp": [
+          "oklch(15% 0.0118 131.46)",
+          "oklch(26% 0.0118 131.46)",
+          "oklch(38% 0.0118 131.46)",
+          "oklch(49% 0.0118 131.46)",
+          "oklch(61% 0.0118 131.46)",
+          "oklch(72% 0.0118 131.46)",
+          "oklch(84% 0.0118 131.46)",
+          "oklch(95% 0.0118 131.46)"
+        ]
+      },
+      "line": {
+        "role": "neutral",
+        "displayName": "Line",
+        "tonalRamp": [
+          "oklch(15% 0.0121 106.64)",
+          "oklch(26% 0.0121 106.64)",
+          "oklch(38% 0.0121 106.64)",
+          "oklch(49% 0.0121 106.64)",
+          "oklch(61% 0.0121 106.64)",
+          "oklch(72% 0.0121 106.64)",
+          "oklch(84% 0.0121 106.64)",
+          "oklch(95% 0.0121 106.64)"
+        ]
+      },
+      "accent": {
+        "role": "primary",
+        "displayName": "Accent",
+        "tonalRamp": [
+          "oklch(15% 0.1595 34.83)",
+          "oklch(26% 0.1595 34.83)",
+          "oklch(38% 0.1595 34.83)",
+          "oklch(49% 0.1595 34.83)",
+          "oklch(61% 0.1595 34.83)",
+          "oklch(72% 0.1595 34.83)",
+          "oklch(84% 0.1595 34.83)",
+          "oklch(95% 0.1595 34.83)"
+        ]
+      },
+      "green": {
+        "role": "secondary",
+        "displayName": "Green",
+        "tonalRamp": [
+          "oklch(15% 0.0813 149.68)",
+          "oklch(26% 0.0813 149.68)",
+          "oklch(38% 0.0813 149.68)",
+          "oklch(49% 0.0813 149.68)",
+          "oklch(61% 0.0813 149.68)",
+          "oklch(72% 0.0813 149.68)",
+          "oklch(84% 0.0813 149.68)",
+          "oklch(95% 0.0813 149.68)"
+        ]
+      },
+      "admin-paper": {
+        "role": "neutral",
+        "displayName": "Admin Paper",
+        "tonalRamp": [
+          "oklch(15% 0.0000 89.88)",
+          "oklch(26% 0.0000 89.88)",
+          "oklch(38% 0.0000 89.88)",
+          "oklch(49% 0.0000 89.88)",
+          "oklch(61% 0.0000 89.88)",
+          "oklch(72% 0.0000 89.88)",
+          "oklch(84% 0.0000 89.88)",
+          "oklch(95% 0.0000 89.88)"
+        ]
+      },
+      "admin-surface": {
+        "role": "neutral",
+        "displayName": "Admin Surface",
+        "tonalRamp": [
+          "oklch(15% 0.0000 89.88)",
+          "oklch(26% 0.0000 89.88)",
+          "oklch(38% 0.0000 89.88)",
+          "oklch(49% 0.0000 89.88)",
+          "oklch(61% 0.0000 89.88)",
+          "oklch(72% 0.0000 89.88)",
+          "oklch(84% 0.0000 89.88)",
+          "oklch(95% 0.0000 89.88)"
+        ]
+      },
+      "admin-ink": {
+        "role": "neutral",
+        "displayName": "Admin Ink",
+        "tonalRamp": [
+          "oklch(15% 0.0000 89.88)",
+          "oklch(26% 0.0000 89.88)",
+          "oklch(38% 0.0000 89.88)",
+          "oklch(49% 0.0000 89.88)",
+          "oklch(61% 0.0000 89.88)",
+          "oklch(72% 0.0000 89.88)",
+          "oklch(84% 0.0000 89.88)",
+          "oklch(95% 0.0000 89.88)"
+        ]
+      },
+      "admin-muted": {
+        "role": "neutral",
+        "displayName": "Admin Muted",
+        "tonalRamp": [
+          "oklch(15% 0.0000 89.88)",
+          "oklch(26% 0.0000 89.88)",
+          "oklch(38% 0.0000 89.88)",
+          "oklch(49% 0.0000 89.88)",
+          "oklch(61% 0.0000 89.88)",
+          "oklch(72% 0.0000 89.88)",
+          "oklch(84% 0.0000 89.88)",
+          "oklch(95% 0.0000 89.88)"
+        ]
+      },
+      "admin-line": {
+        "role": "neutral",
+        "displayName": "Admin Line",
+        "tonalRamp": [
+          "oklch(15% 0.0000 89.88)",
+          "oklch(26% 0.0000 89.88)",
+          "oklch(38% 0.0000 89.88)",
+          "oklch(49% 0.0000 89.88)",
+          "oklch(61% 0.0000 89.88)",
+          "oklch(72% 0.0000 89.88)",
+          "oklch(84% 0.0000 89.88)",
+          "oklch(95% 0.0000 89.88)"
+        ]
+      },
+      "admin-accent": {
+        "role": "primary",
+        "displayName": "Admin Accent",
+        "tonalRamp": [
+          "oklch(15% 0.1173 49.98)",
+          "oklch(26% 0.1173 49.98)",
+          "oklch(38% 0.1173 49.98)",
+          "oklch(49% 0.1173 49.98)",
+          "oklch(61% 0.1173 49.98)",
+          "oklch(72% 0.1173 49.98)",
+          "oklch(84% 0.1173 49.98)",
+          "oklch(95% 0.1173 49.98)"
+        ]
+      },
+      "admin-action": {
+        "role": "primary",
+        "displayName": "Admin Action",
+        "tonalRamp": [
+          "oklch(15% 0.1452 37.26)",
+          "oklch(26% 0.1452 37.26)",
+          "oklch(38% 0.1452 37.26)",
+          "oklch(49% 0.1452 37.26)",
+          "oklch(61% 0.1452 37.26)",
+          "oklch(72% 0.1452 37.26)",
+          "oklch(84% 0.1452 37.26)",
+          "oklch(95% 0.1452 37.26)"
+        ]
+      },
+      "admin-action-text": {
+        "role": "neutral",
+        "displayName": "Admin Action Text",
+        "tonalRamp": [
+          "oklch(15% 0.0141 74.43)",
+          "oklch(26% 0.0141 74.43)",
+          "oklch(38% 0.0141 74.43)",
+          "oklch(49% 0.0141 74.43)",
+          "oklch(61% 0.0141 74.43)",
+          "oklch(72% 0.0141 74.43)",
+          "oklch(84% 0.0141 74.43)",
+          "oklch(95% 0.0141 74.43)"
+        ]
+      }
+    },
+    "typographyMeta": {
+      "display": {
+        "displayName": "Landing display",
+        "purpose": "Título principal em Montserrat; tamanhos responsivos descritos em DESIGN.md."
+      },
+      "body": {
+        "displayName": "Manrope operacional",
+        "purpose": "Corpo, controles e títulos da aplicação."
+      }
+    },
+    "shadows": [
+      {
+        "name": "card-hover",
+        "value": "0 4px 12px #3d4b2a0f",
+        "purpose": "Hover do card claro."
+      },
+      {
+        "name": "preview-hover",
+        "value": "0 7px 20px #242b2012",
+        "purpose": "Hover dos acessos de prévia."
+      },
+      {
+        "name": "dialog",
+        "value": "0 20px 70px #28302040",
+        "purpose": "Diálogo sobre o conteúdo."
+      },
+      {
+        "name": "drawer",
+        "value": "-10px 0 35px #29302320",
+        "purpose": "Gaveta lateral de detalhes."
+      }
+    ],
+    "motion": [
+      {
+        "name": "control-transition",
+        "value": "background .18s, color .18s, box-shadow .18s",
+        "purpose": "Botões e links; removida em prefers-reduced-motion."
+      },
+      {
+        "name": "card-transition",
+        "value": "box-shadow .2s, opacity .2s",
+        "purpose": "Cards do quadro."
+      }
+    ],
+    "breakpoints": [
+      {
+        "name": "mobile-max",
+        "value": "600px"
+      },
+      {
+        "name": "stack-max",
+        "value": "900px"
+      },
+      {
+        "name": "compact-desktop-max",
+        "value": "1180px"
+      },
+      {
+        "name": "large-display-min",
+        "value": "1200px"
+      },
+      {
+        "name": "fixed-hero-actions-min",
+        "value": "1450px"
+      },
+      {
+        "name": "wide-min",
+        "value": "1500px"
+      }
+    ]
+  },
+  "components": [
+    {
+      "name": "Primary button",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "Ação principal nas superfícies claras.",
+      "html": "<button class=\"ds-button ds-primary\">Abrir Mola</button>",
+      "css": ".ds-button{display:inline-flex;align-items:center;justify-content:center;gap:10px;min-height:43px;padding:10px 17px;border:1px solid #b6b8ae;border-radius:8px;font:650 13px/1.35 Manrope,sans-serif;cursor:pointer;transition:background .18s,color .18s,box-shadow .18s}.ds-button:focus-visible{outline:3px solid #c66a36;outline-offset:3px}.ds-primary{background:var(--accent,#bb4427);border-color:var(--accent,#bb4427);color:#fffaf5}.ds-primary:hover{background:#96351f}"
+    },
+    {
+      "name": "Secondary button",
+      "kind": "button",
+      "refersTo": "button-secondary",
+      "description": "Ação alternativa com borda.",
+      "html": "<button class=\"ds-button ds-secondary\">Acessar Admin</button>",
+      "css": ".ds-button{display:inline-flex;align-items:center;justify-content:center;gap:10px;min-height:43px;padding:10px 17px;border:1px solid #b6b8ae;border-radius:8px;font:650 13px/1.35 Manrope,sans-serif;cursor:pointer;transition:background .18s,color .18s,box-shadow .18s}.ds-button:focus-visible{outline:3px solid #c66a36;outline-offset:3px}.ds-secondary{background:transparent;color:var(--ink,#232622)}.ds-secondary:hover{background:#eeeee5}"
+    },
+    {
+      "name": "Admin primary button",
+      "kind": "button",
+      "refersTo": "button-admin",
+      "description": "Botão primário do Admin; não usa o pêssego dos links como fundo.",
+      "html": "<button class=\"ds-button ds-admin\">Novo playbook</button>",
+      "css": ".ds-button{display:inline-flex;align-items:center;justify-content:center;gap:10px;min-height:43px;padding:10px 17px;border:1px solid #b6b8ae;border-radius:8px;font:650 13px/1.35 Manrope,sans-serif;cursor:pointer;transition:background .18s,color .18s,box-shadow .18s}.ds-button:focus-visible{outline:3px solid #c66a36;outline-offset:3px}.ds-admin{background:#b84e2e;border-color:#b84e2e;color:#fff8ef}.ds-admin:hover{background:#9d3f26}"
+    },
+    {
+      "name": "Text field",
+      "kind": "input",
+      "refersTo": "input",
+      "description": "Campo rotulado da superfície clara.",
+      "html": "<label class=\"ds-label\">Repositório<input class=\"ds-field\" placeholder=\"empresa/projeto\"></label>",
+      "css": ".ds-label{display:flex;flex-direction:column;gap:7px;font:600 11px Manrope,sans-serif;color:var(--ink,#232622)}.ds-field{border:1px solid #cfd4c3;border-radius:6px;background:var(--surface,#fffefa);padding:10px 11px;color:#354229;font:12px Manrope,sans-serif}.ds-field:focus-visible{outline:3px solid #c66a36;outline-offset:3px}"
+    },
+    {
+      "name": "Status chip",
+      "kind": "chip",
+      "refersTo": "status",
+      "description": "Estado claro com texto e ícone; não é um botão.",
+      "html": "<span class=\"ds-status\"><svg width=\"12\" height=\"12\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\"><path d=\"m20 6-11 11-5-5\"/></svg>Verificado</span>",
+      "css": ".ds-status{display:inline-flex;align-items:center;gap:5px;padding:3px 7px;border-radius:5px;font:650 9px/1.6 Manrope,sans-serif;color:#37623b;background:#e3edda}"
+    },
+    {
+      "name": "Case card",
+      "kind": "card",
+      "refersTo": "case-card",
+      "description": "Card de caso com ação para detalhes.",
+      "html": "<article class=\"ds-card\"><code>RQ-104</code><button class=\"ds-title\">Falha ao salvar configuração</button><span>Agente de reprodução</span></article>",
+      "css": ".ds-card{padding:10px;background:var(--surface,#fffefa);border:1px solid #d9dece;border-radius:9px;font:11px/1.6 Manrope,sans-serif;color:var(--ink,#232622);transition:box-shadow .2s,opacity .2s}.ds-card:hover{box-shadow:0 4px 12px #3d4b2a0f}.ds-card code{font-family:Consolas,monospace}.ds-title{display:block;text-align:left;padding:0;margin:8px 0;background:none;border:0;color:inherit;font:650 13px Manrope,sans-serif;cursor:pointer}.ds-title:hover{text-decoration:underline}.ds-title:focus-visible{outline:3px solid #c66a36;outline-offset:3px}"
+    },
+    {
+      "name": "Admin panel",
+      "kind": "card",
+      "refersTo": "admin-panel",
+      "description": "Container neutro do painel administrativo.",
+      "html": "<section class=\"ds-panel\"><h2>Execuções recentes</h2><p>Dados de demonstração</p></section>",
+      "css": ".ds-panel{background:#171717;color:#f1f1f1;border:1px solid #343434;border-radius:12px;overflow:hidden;padding:19px;font:14px/1.6 Manrope,sans-serif}.ds-panel h2{font-size:13px;font-weight:750;margin:0 0 17px}.ds-panel p{font-size:11px;color:#a8a8a8}"
+    }
+  ],
+  "narrative": {
+    "northStar": "Sala de controle editorial",
+    "overview": "Interface de engenharia com leitura editorial: títulos fortes, planos foscos, divisórias finas e conteúdo operacional compacto. Landing e Mola usam papel claro e quente; Admin usa preto e cinzas neutros, conforme a correção explícita do usuário. O laranja identifica ações e seleção.\n\nO personagem Mola preserva o atlas arco-íris original; o movimento elástico Slinky foi integrado ao transporte. Conteúdo, controles e estados permanecem compreensíveis sem depender da animação.",
+    "keyCharacteristics": [
+      "Papel claro na entrada e no quadro; preto neutro no Admin.",
+      "Hierarquia tipográfica forte sobre dados compactos.",
+      "Demonstração identificada e ambiente explícito.",
+      "Personagem original como comportamento funcional do quadro."
+    ],
+    "rules": [
+      {
+        "name": "The Theme Boundary Rule",
+        "body": "Preserve preto e cinza neutro no Admin; não propague os verdes de superfície do quadro para o painel. Acentos laranja e alertas quentes continuam semânticos.",
+        "section": "colors"
+      },
+      {
+        "name": "The Data Type Rule",
+        "body": "Use mono e números tabulares para identificação e medição; preserve sans legível nos relatos e ações.",
+        "section": "typography"
+      },
+      {
+        "name": "The Evidence Hierarchy Rule",
+        "body": "Separe contexto, ações, indicadores e dados por alinhamento e divisórias; mantenha busca, acompanhamento e detalhes disponíveis no responsivo.",
+        "section": "layout"
+      }
+    ],
+    "dos": [
+      "Do preserve a separação entre papel claro e Admin preto neutro.",
+      "Do mantenha texto e ícone junto dos estados e ambiente explícito.",
+      "Do preserve foco visível, rótulos, redução de movimento e rolagem local dos dados.",
+      "Do derive novas superfícies dos controles e hierarquias existentes."
+    ],
+    "donts": [
+      "Don't reintroduza verde nos fundos e planos do Admin.",
+      "Don't substitua o personagem original por uma ilustração genérica.",
+      "Don't apresente dados de demonstração como operação remota comprovada."
+    ]
+  },
+  "interfacePolicy": {
+    "environment": "Server env only; no client selector or connection editor.",
+    "copy": "Use plain Portuguese: Atividades, Tempo por etapa, Projeto and Procedimentos. Explain results instead of showing hashes, HTTP codes and machine labels."
+  }
+}

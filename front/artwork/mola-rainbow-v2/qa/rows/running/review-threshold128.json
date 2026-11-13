@@ -1,0 +1,112 @@
+{
+  "ok": true,
+  "frames_root": "artwork/mola-rainbow-v2/qa/rows/running/frames-threshold128",
+  "states": [
+    "running"
+  ],
+  "errors": [],
+  "warnings": [],
+  "rows": [
+    {
+      "state": "running",
+      "expected_frames": 6,
+      "actual_frames": 6,
+      "extraction_method": "components",
+      "ok": true,
+      "errors": [],
+      "warnings": [],
+      "frames": [
+        {
+          "index": 0,
+          "file": "artwork/mola-rainbow-v2/qa/rows/running/frames-threshold128/running/00.png",
+          "width": 192,
+          "height": 208,
+          "nontransparent_pixels": 14508,
+          "bbox": [
+            5,
+            46,
+            187,
+            175
+          ],
+          "edge_pixels": 0,
+          "chroma_adjacent_pixels": 628
+        },
+        {
+          "index": 1,
+          "file": "artwork/mola-rainbow-v2/qa/rows/running/frames-threshold128/running/01.png",
+          "width": 192,
+          "height": 208,
+          "nontransparent_pixels": 13907,
+          "bbox": [
+            5,
+            51,
+            186,
+            175
+          ],
+          "edge_pixels": 0,
+          "chroma_adjacent_pixels": 483
+        },
+        {
+          "index": 2,
+          "file": "artwork/mola-rainbow-v2/qa/rows/running/frames-threshold128/running/02.png",
+          "width": 192,
+          "height": 208,
+          "nontransparent_pixels": 13080,
+          "bbox": [
+            7,
+            59,
+            185,
+            175
+          ],
+          "edge_pixels": 0,
+          "chroma_adjacent_pixels": 509
+        },
+        {
+          "index": 3,
+          "file": "artwork/mola-rainbow-v2/qa/rows/running/frames-threshold128/running/03.png",
+          "width": 192,
+          "height": 208,
+          "nontransparent_pixels": 14134,
+          "bbox": [
+            5,
+            49,
+            186,
+            175
+          ],
+          "edge_pixels": 0,
+          "chroma_adjacent_pixels": 565
+        },
+        {
+          "index": 4,
+          "file": "artwork/mola-rainbow-v2/qa/rows/running/frames-threshold128/running/04.png",
+          "width": 192,
+          "height": 208,
+          "nontransparent_pixels": 15435,
+          "bbox": [
+            6,
+            33,
+            186,
+            175
+          ],
+          "edge_pixels": 0,
+          "chroma_adjacent_pixels": 707
+        },
+        {
+          "index": 5,
+          "file": "artwork/mola-rainbow-v2/qa/rows/running/frames-threshold128/running/05.png",
+          "width": 192,
+          "height": 208,
+          "nontransparent_pixels": 14357,
+          "bbox": [
+            5,
+            46,
+            187,
+            175
+          ],
+          "edge_pixels": 0,
+          "chroma_adjacent_pixels": 598
+        }
+      ]
+    }
+  ]
+}

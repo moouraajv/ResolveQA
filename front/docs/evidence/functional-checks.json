@@ -1,0 +1,28 @@
+{
+  "checks": [
+    "Landing contém documentação e playbooks",
+    "Landing sem seletor de ambiente ou linguagem de configuração",
+    "Landing mobile sem overflow horizontal",
+    "Admin abre painel com execuções",
+    "Admin preto com contraste legível",
+    "Logs estruturados",
+    "Trace waterfall",
+    "Cadastro de playbook",
+    "Playbook persiste após reload",
+    "Exclusão de playbook",
+    "Referências de documentação",
+    "Admin mobile sem overflow horizontal",
+    "Mola transporta card após evento",
+    "Criação de caso no quadro",
+    "Detalhes fecham com Escape",
+    "Quadro mobile rola dentro do Kanban",
+    "Armazenamento inválido recupera a demonstração",
+    "Preferência antiga não sobrepõe o env"
+  ],
+  "errors": [],
+  "viewports": [
+    "1536x1024",
+    "390x844"
+  ],
+  "configuration": "Demo from env; stored mode/config cannot override it. Production validated separately by test:stream."
+}

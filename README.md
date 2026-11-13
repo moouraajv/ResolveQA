@@ -2,10 +2,13 @@
 
 ResolveQA — Converge Challenge 2026
 
-Backend / cloud deste repositório (`moouraajv/ResolveQA`). O frontend Mola vive em repositório separado e público:
+Monorepo principal (`moouraajv/ResolveQA`):
 
-- **Frontend (código):** https://github.com/ThiagoVenturaV/ResolveQA-front
-- **Frontend (demo):** https://d10ry6ff7l79jo.cloudfront.net
+- **Backend / agentes:** `src/resolveqa`, `scripts/`, `infra/aws/`
+- **Frontend Mola:** `front/`
+- **Staging:** branch `staging` com deploy AWS automático (API+worker e front)
+
+O repositório legado `ThiagoVenturaV/ResolveQA-front` fica como espelho histórico; desenvolvimento novo no monorepo.
 
 ## Demo pública (AWS CloudFront, HTTPS)
 
@@ -19,4 +22,4 @@ Backend / cloud deste repositório (`moouraajv/ResolveQA`). O frontend Mola vive
 | Quadro | https://d10ry6ff7l79jo.cloudfront.net/quadro |
 | Admin | https://d10ry6ff7l79jo.cloudfront.net/admin |
 
-O armazenamento do backend demo é **efêmero** (memória). Stack CloudFormation do back: `resolveqa-demo-backend`. Stack do front: `resolveqa-frontend`.
+Staging: stacks `resolveqa-staging-backend` / `resolveqa-staging-frontend` (ver `docs/cicd-aws-staging.md`).

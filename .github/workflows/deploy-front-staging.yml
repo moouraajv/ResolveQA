@@ -1,0 +1,80 @@
+name: Deploy AWS staging (frontend monorepo)
+
+on:
+  push:
+    branches: [staging]
+    paths:
+      - "front/**"
+      - ".github/workflows/deploy-front-staging.yml"
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+concurrency:
+  group: deploy-aws-frontend-staging
+  cancel-in-progress: false
+
+defaults:
+  run:
+    working-directory: front
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: front/package-lock.json
+
+      - name: Install
+        run: npm ci
+
+      - name: Build staging export
+        env:
+          RESOLVEQA_MODE: production
+          RESOLVEQA_API_URL: ${{ vars.RESOLVEQA_API_URL_STAGING || vars.RESOLVEQA_API_URL }}
+          RESOLVEQA_SNAPSHOT_PATH: /api/snapshot
+          RESOLVEQA_EVENTS_PATH: /api/events
+          RESOLVEQA_CASE_IDS: ${{ vars.RESOLVEQA_CASE_IDS_STAGING }}
+        run: |
+          set -euo pipefail
+          if [ -z "${RESOLVEQA_API_URL:-}" ]; then
+            echo "Missing RESOLVEQA_API_URL_STAGING (or RESOLVEQA_API_URL)." >&2
+            exit 1
+          fi
+          npm run build:aws
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Deploy staging CloudFront/S3
+        env:
+          AWS_REGION: ${{ secrets.AWS_REGION }}
+        run: npm run deploy:aws -- "" "${{ secrets.AWS_REGION }}" "${{ secrets.AWS_STACK_NAME_FRONT_STAGING || secrets.AWS_STACK_NAME_STAGING || 'resolveqa-staging-frontend' }}"
+
+      - name: Smoke staging SiteUrl + backend health
+        env:
+          AWS_REGION: ${{ secrets.AWS_REGION }}
+          STACK: ${{ secrets.AWS_STACK_NAME_FRONT_STAGING || secrets.AWS_STACK_NAME_STAGING || 'resolveqa-staging-frontend' }}
+          RESOLVEQA_API_URL: ${{ vars.RESOLVEQA_API_URL_STAGING || vars.RESOLVEQA_API_URL }}
+        working-directory: .
+        run: |
+          set -euo pipefail
+          url=$(aws cloudformation describe-stacks --stack-name "$STACK" \
+            --query "Stacks[0].Outputs[?OutputKey=='SiteUrl'].OutputValue | [0]" --output text)
+          echo "SiteUrl=$url"
+          echo "STAGING_FRONT_URL=$url" >> "$GITHUB_STEP_SUMMARY"
+          code=$(curl -sS -o /tmp/front-smoke.html -w '%{http_code}' "$url")
+          test "$code" = "200"
+          api="${RESOLVEQA_API_URL%/}"
+          health=$(curl -sS -o /tmp/back-health.json -w '%{http_code}' "$api/health")
+          test "$health" = "200"

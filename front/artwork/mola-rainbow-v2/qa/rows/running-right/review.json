@@ -1,0 +1,160 @@
+{
+  "ok": false,
+  "frames_root": "artwork/mola-rainbow-v2/qa/rows/running-right/frames",
+  "states": [
+    "running-right"
+  ],
+  "errors": [
+    "running-right frame 00 has 1264 non-transparent pixels close to the chroma key",
+    "running-right frame 01 has 932 non-transparent pixels close to the chroma key",
+    "running-right frame 02 has 816 non-transparent pixels close to the chroma key",
+    "running-right frame 03 has 1149 non-transparent pixels close to the chroma key",
+    "running-right frame 04 has 1219 non-transparent pixels close to the chroma key",
+    "running-right frame 05 has 944 non-transparent pixels close to the chroma key",
+    "running-right frame 06 has 839 non-transparent pixels close to the chroma key",
+    "running-right frame 07 has 1393 non-transparent pixels close to the chroma key"
+  ],
+  "warnings": [],
+  "rows": [
+    {
+      "state": "running-right",
+      "expected_frames": 8,
+      "actual_frames": 8,
+      "extraction_method": "components",
+      "ok": false,
+      "errors": [
+        "running-right frame 00 has 1264 non-transparent pixels close to the chroma key",
+        "running-right frame 01 has 932 non-transparent pixels close to the chroma key",
+        "running-right frame 02 has 816 non-transparent pixels close to the chroma key",
+        "running-right frame 03 has 1149 non-transparent pixels close to the chroma key",
+        "running-right frame 04 has 1219 non-transparent pixels close to the chroma key",
+        "running-right frame 05 has 944 non-transparent pixels close to the chroma key",
+        "running-right frame 06 has 839 non-transparent pixels close to the chroma key",
+        "running-right frame 07 has 1393 non-transparent pixels close to the chroma key"
+      ],
+      "warnings": [],
+      "frames": [
+        {
+          "index": 0,
+          "file": "artwork/mola-rainbow-v2/qa/rows/running-right/frames/running-right/00.png",
+          "width": 192,
+          "height": 208,
+          "nontransparent_pixels": 15188,
+          "bbox": [
+            6,
+            35,
+            185,
+            174
+          ],
+          "edge_pixels": 0,
+          "chroma_adjacent_pixels": 1264
+        },
+        {
+          "index": 1,
+          "file": "artwork/mola-rainbow-v2/qa/rows/running-right/frames/running-right/01.png",
+          "width": 192,
+          "height": 208,
+          "nontransparent_pixels": 14106,
+          "bbox": [
+            7,
+            46,
+            184,
+            174
+          ],
+          "edge_pixels": 0,
+          "chroma_adjacent_pixels": 932
+        },
+        {
+          "index": 2,
+          "file": "artwork/mola-rainbow-v2/qa/rows/running-right/frames/running-right/02.png",
+          "width": 192,
+          "height": 208,
+          "nontransparent_pixels": 13254,
+          "bbox": [
+            9,
+            52,
+            183,
+            174
+          ],
+          "edge_pixels": 0,
+          "chroma_adjacent_pixels": 816
+        },
+        {
+          "index": 3,
+          "file": "artwork/mola-rainbow-v2/qa/rows/running-right/frames/running-right/03.png",
+          "width": 192,
+          "height": 208,
+          "nontransparent_pixels": 15173,
+          "bbox": [
+            6,
+            35,
+            186,
+            174
+          ],
+          "edge_pixels": 0,
+          "chroma_adjacent_pixels": 1149
+        },
+        {
+          "index": 4,
+          "file": "artwork/mola-rainbow-v2/qa/rows/running-right/frames/running-right/04.png",
+          "width": 192,
+          "height": 208,
+          "nontransparent_pixels": 15140,
+          "bbox": [
+            6,
+            34,
+            186,
+            174
+          ],
+          "edge_pixels": 0,
+          "chroma_adjacent_pixels": 1219
+        },
+        {
+          "index": 5,
+          "file": "artwork/mola-rainbow-v2/qa/rows/running-right/frames/running-right/05.png",
+          "width": 192,
+          "height": 208,
+          "nontransparent_pixels": 14105,
+          "bbox": [
+            9,
+            44,
+            182,
+            173
+          ],
+          "edge_pixels": 0,
+          "chroma_adjacent_pixels": 944
+        },
+        {
+          "index": 6,
+          "file": "artwork/mola-rainbow-v2/qa/rows/running-right/frames/running-right/06.png",
+          "width": 192,
+          "height": 208,
+          "nontransparent_pixels": 13333,
+          "bbox": [
+            10,
+            52,
+            183,
+            174
+          ],
+          "edge_pixels": 0,
+          "chroma_adjacent_pixels": 839
+        },
+        {
+          "index": 7,
+          "file": "artwork/mola-rainbow-v2/qa/rows/running-right/frames/running-right/07.png",
+          "width": 192,
+          "height": 208,
+          "nontransparent_pixels": 15119,
+          "bbox": [
+            6,
+            34,
+            186,
+            174
+          ],
+          "edge_pixels": 0,
+          "chroma_adjacent_pixels": 1393
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,142 @@
+{
+  "ok": true,
+  "frames_root": "artwork/mola-rainbow-v2/qa/rows/running-left/frames",
+  "states": [
+    "running-left"
+  ],
+  "errors": [],
+  "warnings": [],
+  "rows": [
+    {
+      "state": "running-left",
+      "expected_frames": 8,
+      "actual_frames": 8,
+      "extraction_method": "components",
+      "ok": true,
+      "errors": [],
+      "warnings": [],
+      "frames": [
+        {
+          "index": 0,
+          "file": "artwork/mola-rainbow-v2/qa/rows/running-left/frames/running-left/00.png",
+          "width": 192,
+          "height": 208,
+          "nontransparent_pixels": 14944,
+          "bbox": [
+            7,
+            35,
+            186,
+            174
+          ],
+          "edge_pixels": 0,
+          "chroma_adjacent_pixels": 710
+        },
+        {
+          "index": 1,
+          "file": "artwork/mola-rainbow-v2/qa/rows/running-left/frames/running-left/01.png",
+          "width": 192,
+          "height": 208,
+          "nontransparent_pixels": 13896,
+          "bbox": [
+            8,
+            46,
+            184,
+            174
+          ],
+          "edge_pixels": 0,
+          "chroma_adjacent_pixels": 524
+        },
+        {
+          "index": 2,
+          "file": "artwork/mola-rainbow-v2/qa/rows/running-left/frames/running-left/02.png",
+          "width": 192,
+          "height": 208,
+          "nontransparent_pixels": 13056,
+          "bbox": [
+            9,
+            52,
+            183,
+            174
+          ],
+          "edge_pixels": 0,
+          "chroma_adjacent_pixels": 440
+        },
+        {
+          "index": 3,
+          "file": "artwork/mola-rainbow-v2/qa/rows/running-left/frames/running-left/03.png",
+          "width": 192,
+          "height": 208,
+          "nontransparent_pixels": 14938,
+          "bbox": [
+            7,
+            35,
+            186,
+            174
+          ],
+          "edge_pixels": 0,
+          "chroma_adjacent_pixels": 665
+        },
+        {
+          "index": 4,
+          "file": "artwork/mola-rainbow-v2/qa/rows/running-left/frames/running-left/04.png",
+          "width": 192,
+          "height": 208,
+          "nontransparent_pixels": 14882,
+          "bbox": [
+            6,
+            34,
+            186,
+            174
+          ],
+          "edge_pixels": 0,
+          "chroma_adjacent_pixels": 670
+        },
+        {
+          "index": 5,
+          "file": "artwork/mola-rainbow-v2/qa/rows/running-left/frames/running-left/05.png",
+          "width": 192,
+          "height": 208,
+          "nontransparent_pixels": 13907,
+          "bbox": [
+            10,
+            44,
+            182,
+            173
+          ],
+          "edge_pixels": 0,
+          "chroma_adjacent_pixels": 529
+        },
+        {
+          "index": 6,
+          "file": "artwork/mola-rainbow-v2/qa/rows/running-left/frames/running-left/06.png",
+          "width": 192,
+          "height": 208,
+          "nontransparent_pixels": 13052,
+          "bbox": [
+            9,
+            52,
+            183,
+            174
+          ],
+          "edge_pixels": 0,
+          "chroma_adjacent_pixels": 392
+        },
+        {
+          "index": 7,
+          "file": "artwork/mola-rainbow-v2/qa/rows/running-left/frames/running-left/07.png",
+          "width": 192,
+          "height": 208,
+          "nontransparent_pixels": 14787,
+          "bbox": [
+            6,
+            34,
+            186,
+            174
+          ],
+          "edge_pixels": 0,
+          "chroma_adjacent_pixels": 725
+        }
+      ]
+    }
+  ]
+}

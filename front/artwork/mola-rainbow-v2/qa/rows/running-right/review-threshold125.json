@@ -1,0 +1,148 @@
+{
+  "ok": false,
+  "frames_root": "artwork/mola-rainbow-v2/qa/rows/running-right/frames-threshold125",
+  "states": [
+    "running-right"
+  ],
+  "errors": [
+    "running-right frame 00 has 816 non-transparent pixels close to the chroma key",
+    "running-right frame 07 has 841 non-transparent pixels close to the chroma key"
+  ],
+  "warnings": [],
+  "rows": [
+    {
+      "state": "running-right",
+      "expected_frames": 8,
+      "actual_frames": 8,
+      "extraction_method": "components",
+      "ok": false,
+      "errors": [
+        "running-right frame 00 has 816 non-transparent pixels close to the chroma key",
+        "running-right frame 07 has 841 non-transparent pixels close to the chroma key"
+      ],
+      "warnings": [],
+      "frames": [
+        {
+          "index": 0,
+          "file": "artwork/mola-rainbow-v2/qa/rows/running-right/frames-threshold125/running-right/00.png",
+          "width": 192,
+          "height": 208,
+          "nontransparent_pixels": 14997,
+          "bbox": [
+            6,
+            35,
+            185,
+            174
+          ],
+          "edge_pixels": 0,
+          "chroma_adjacent_pixels": 816
+        },
+        {
+          "index": 1,
+          "file": "artwork/mola-rainbow-v2/qa/rows/running-right/frames-threshold125/running-right/01.png",
+          "width": 192,
+          "height": 208,
+          "nontransparent_pixels": 13950,
+          "bbox": [
+            7,
+            46,
+            184,
+            174
+          ],
+          "edge_pixels": 0,
+          "chroma_adjacent_pixels": 554
+        },
+        {
+          "index": 2,
+          "file": "artwork/mola-rainbow-v2/qa/rows/running-right/frames-threshold125/running-right/02.png",
+          "width": 192,
+          "height": 208,
+          "nontransparent_pixels": 13091,
+          "bbox": [
+            9,
+            52,
+            183,
+            174
+          ],
+          "edge_pixels": 0,
+          "chroma_adjacent_pixels": 517
+        },
+        {
+          "index": 3,
+          "file": "artwork/mola-rainbow-v2/qa/rows/running-right/frames-threshold125/running-right/03.png",
+          "width": 192,
+          "height": 208,
+          "nontransparent_pixels": 14968,
+          "bbox": [
+            6,
+            35,
+            186,
+            174
+          ],
+          "edge_pixels": 0,
+          "chroma_adjacent_pixels": 756
+        },
+        {
+          "index": 4,
+          "file": "artwork/mola-rainbow-v2/qa/rows/running-right/frames-threshold125/running-right/04.png",
+          "width": 192,
+          "height": 208,
+          "nontransparent_pixels": 14922,
+          "bbox": [
+            7,
+            34,
+            186,
+            174
+          ],
+          "edge_pixels": 0,
+          "chroma_adjacent_pixels": 791
+        },
+        {
+          "index": 5,
+          "file": "artwork/mola-rainbow-v2/qa/rows/running-right/frames-threshold125/running-right/05.png",
+          "width": 192,
+          "height": 208,
+          "nontransparent_pixels": 13949,
+          "bbox": [
+            10,
+            44,
+            182,
+            173
+          ],
+          "edge_pixels": 0,
+          "chroma_adjacent_pixels": 623
+        },
+        {
+          "index": 6,
+          "file": "artwork/mola-rainbow-v2/qa/rows/running-right/frames-threshold125/running-right/06.png",
+          "width": 192,
+          "height": 208,
+          "nontransparent_pixels": 13112,
+          "bbox": [
+            9,
+            52,
+            183,
+            174
+          ],
+          "edge_pixels": 0,
+          "chroma_adjacent_pixels": 497
+        },
+        {
+          "index": 7,
+          "file": "artwork/mola-rainbow-v2/qa/rows/running-right/frames-threshold125/running-right/07.png",
+          "width": 192,
+          "height": 208,
+          "nontransparent_pixels": 14871,
+          "bbox": [
+            6,
+            34,
+            186,
+            174
+          ],
+          "edge_pixels": 0,
+          "chroma_adjacent_pixels": 841
+        }
+      ]
+    }
+  ]
+}

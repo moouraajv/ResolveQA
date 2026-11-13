@@ -1,0 +1,5 @@
+Independent atlas review by mola_sprite_walk (read-only), 2026-11-07:
+Approved final atlas SHA256 68d32b5e21a4c5c6ffffa556b3ed17f82b1b89e9529246736014e1f81b0b9bc7.
+9 states / 57 frames complete, 15 empty slots, no clipping or frame bleed. Rainbow, open coils, white eyes and feet preserved. Both gait directions alternate support, jump visibly leaves and returns to baseline, failure sags/recover, wave uses original foot, work is not locomotion.
+Non-blocking: small pale stepped highlights in violet region, already present before despill and lighter after cleanup; violet remains intact.
+Limit: contact sheets + 4 stills inspected; temporal playback NOT_RUN by this reviewer.
